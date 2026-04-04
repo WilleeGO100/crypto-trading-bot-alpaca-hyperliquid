@@ -1,0 +1,16 @@
+[Unit]
+Description=Alpaca Scanner + Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/hyperliquid-python-sdk
+ExecStart=/opt/hyperliquid-python-sdk/deploy/linux/run_alpaca.sh
+Restart=always
+RestartSec=5
+User=ubuntu
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

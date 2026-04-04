@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+hyperliquid
+eth-account
+python-dotenv
+requests

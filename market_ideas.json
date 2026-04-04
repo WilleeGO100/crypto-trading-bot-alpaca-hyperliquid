@@ -1,0 +1,10 @@
+{
+    "gamma_analysis": {
+        "last_updated": "2026-03-24 01:58:03",
+        "spot_price": 6581.76,
+        "gamma_flip": 6627.5,
+        "major_call_wall": 6630.0,
+        "major_put_wall": 6580.0,
+        "market_regime": "NEGATIVE"
+    }
+}

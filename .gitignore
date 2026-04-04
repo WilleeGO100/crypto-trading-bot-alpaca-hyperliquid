@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE/editor
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+
+# Runtime artifacts
+data/*.csv
+data/*.json
+LiveFeed.csv
+engine_state.json
+trade_signals.csv
+trades_taken.csv
+market_analysis.json
