@@ -6,14 +6,16 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
 import pandas as pd
-import yfinance as yf
 from dotenv import load_dotenv
+from hyperliquid.info import Info
+from hyperliquid.utils.constants import MAINNET_API_URL, TESTNET_API_URL
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
@@ -23,6 +25,9 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 RANKINGS_PATH = DATA_DIR / "scanner_rankings.json"
 
 DEFAULT_UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "DOGE", "AVAX", "LINK", "ADA"]
+IS_TESTNET = os.getenv("USE_TESTNET", "True").strip().lower() == "true"
+BASE_URL = TESTNET_API_URL if IS_TESTNET else MAINNET_API_URL
+_INFO_CLIENT: Optional[Info] = None
 
 
 @dataclass
@@ -57,19 +62,42 @@ def _safe_float(value: object, default: float = 0.0) -> float:
         return default
 
 
-def _fetch_symbol_metrics(coin: str) -> Optional[ScanResult]:
-    market_symbol = f"{coin}-USD"
+def _get_info_client() -> Optional[Info]:
+    global _INFO_CLIENT
+    if _INFO_CLIENT is not None:
+        return _INFO_CLIENT
     try:
-        ticker = yf.Ticker(market_symbol)
-        # 2 days / 5m gives enough bars for short-term tradability metrics.
-        df = ticker.history(period="2d", interval="5m", auto_adjust=False)
-        if df is None or df.empty or len(df) < 40:
+        _INFO_CLIENT = Info(base_url=BASE_URL, skip_ws=True)
+        return _INFO_CLIENT
+    except Exception:
+        return None
+
+
+def _fetch_symbol_metrics(coin: str) -> Optional[ScanResult]:
+    market_symbol = f"{coin}-USDC"
+    try:
+        info = _get_info_client()
+        if info is None:
             return None
 
-        close = pd.to_numeric(df["Close"], errors="coerce").dropna()
-        high = pd.to_numeric(df["High"], errors="coerce").dropna()
-        low = pd.to_numeric(df["Low"], errors="coerce").dropna()
-        vol = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
+        end_ms = int(time.time() * 1000)
+        start_ms = end_ms - (2 * 24 * 60 * 60 * 1000)
+        candles = info.candles_snapshot(
+            name=coin,
+            interval="5m",
+            startTime=start_ms,
+            endTime=end_ms,
+        )
+        if not candles:
+            return None
+        df = pd.DataFrame(candles)
+        if df.empty or len(df) < 40:
+            return None
+
+        close = pd.to_numeric(df.get("c"), errors="coerce").dropna()
+        high = pd.to_numeric(df.get("h"), errors="coerce").dropna()
+        low = pd.to_numeric(df.get("l"), errors="coerce").dropna()
+        vol = pd.to_numeric(df.get("v"), errors="coerce").fillna(0.0)
         if close.empty or high.empty or low.empty:
             return None
 
@@ -114,13 +142,13 @@ def run_scan(top_n: int = 5) -> dict:
     if not results:
         payload = {
             "timestamp": _now_iso(),
-            "source": "scanner",
+            "source": "scanner_hyperliquid",
             "top_n": top_n,
             "rankings": [
                 {
                     "rank": 1,
                     "coin": "BTC",
-                    "market_symbol": "BTC-USD",
+                    "market_symbol": "BTC-USDC",
                     "trade_symbol_hyperliquid": "BTC",
                     "trade_symbol_alpaca": "BTC/USD",
                     "score": 0.0,
@@ -147,7 +175,7 @@ def run_scan(top_n: int = 5) -> dict:
     ranked = sorted(results, key=lambda r: r.score, reverse=True)[: max(1, top_n)]
     payload = {
         "timestamp": _now_iso(),
-        "source": "scanner",
+        "source": "scanner_hyperliquid",
         "top_n": top_n,
         "rankings": [
             {
