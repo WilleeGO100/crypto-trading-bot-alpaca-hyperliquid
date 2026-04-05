@@ -104,10 +104,28 @@ def _normalize_alpaca_symbol(symbol: str) -> str:
     return raw
 
 
+def _normalize_hyperliquid_symbol(symbol: str) -> str:
+    raw = symbol.strip().upper()
+    if not raw:
+        return "BTC"
+    if "/" in raw:
+        raw = raw.split("/", 1)[0]
+    if "-" in raw:
+        raw = raw.split("-", 1)[0]
+    if raw.endswith("USD") and len(raw) > 3:
+        raw = raw[:-3]
+    if raw.endswith("USDT") and len(raw) > 4:
+        raw = raw[:-4]
+    return raw
+
+
 if BROKER == "alpaca":
     normalized_symbol = _normalize_alpaca_symbol(os.getenv("TRADE_SYMBOL", "BTC/USD"))
     os.environ["TRADE_SYMBOL"] = normalized_symbol
     os.environ["ALPACA_SYMBOL"] = normalized_symbol
+elif BROKER == "hyperliquid":
+    normalized_symbol = _normalize_hyperliquid_symbol(os.getenv("TRADE_SYMBOL", "BTC"))
+    os.environ["TRADE_SYMBOL"] = normalized_symbol
 
 SYMBOL = os.getenv("TRADE_SYMBOL", "BTC/USD")
 
@@ -220,6 +238,11 @@ if env_max_consecutive_losses:
     RM["max_consecutive_losses"] = int(env_max_consecutive_losses)
 
 EXECUTION_SLIPPAGE_ALERT_USD = float(os.getenv("EXECUTION_SLIPPAGE_ALERT_USD", "10"))
+HL_LEVERAGE_ENABLED = os.getenv("HL_LEVERAGE_ENABLED", "False").lower() == "true"
+HL_MARGIN_MODE = os.getenv("HL_MARGIN_MODE", "cross").strip().lower()
+HL_DEFAULT_LEVERAGE = int(float(os.getenv("HL_DEFAULT_LEVERAGE", "1")))
+HL_MAX_LEVERAGE_CAP = int(float(os.getenv("HL_MAX_LEVERAGE_CAP", "5")))
+HL_LEVERAGE_BY_COIN_RAW = os.getenv("HL_LEVERAGE_BY_COIN", "").strip()
 
 POLL_SECONDS = float(LG.get("poll_seconds", 2))
 
@@ -282,6 +305,37 @@ def _extract_execution_meta(result: Any) -> Dict[str, Any]:
         if v is not None:
             out[k] = v
     return out
+
+
+def _parse_hl_leverage_by_coin(raw: str) -> Dict[str, int]:
+    mapping: Dict[str, int] = {}
+    if not raw:
+        return mapping
+    for token in raw.split(","):
+        item = token.strip()
+        if not item or ":" not in item:
+            continue
+        coin_raw, lev_raw = item.split(":", 1)
+        coin = _normalize_hyperliquid_symbol(coin_raw)
+        if not coin:
+            continue
+        try:
+            lev = int(float(lev_raw.strip()))
+        except Exception:
+            continue
+        if lev > 0:
+            mapping[coin] = lev
+    return mapping
+
+
+HL_LEVERAGE_BY_COIN = _parse_hl_leverage_by_coin(HL_LEVERAGE_BY_COIN_RAW)
+
+
+def _get_hl_target_leverage(coin: str) -> int:
+    normalized = _normalize_hyperliquid_symbol(coin)
+    requested = HL_LEVERAGE_BY_COIN.get(normalized, HL_DEFAULT_LEVERAGE)
+    capped = min(max(requested, 1), max(HL_MAX_LEVERAGE_CAP, 1))
+    return capped
 
 
 def append_execution_telemetry(row: Dict[str, Any]) -> None:
@@ -632,6 +686,21 @@ def execute_hl_trade(action: str, coin: str, price: float, sz: float) -> Optiona
         if "EXIT" in action.upper():
             result = exchange.market_close(coin=coin, sz=sz, px=price)
         else:
+            if HL_LEVERAGE_ENABLED:
+                leverage = _get_hl_target_leverage(coin)
+                is_cross = HL_MARGIN_MODE != "isolated"
+                try:
+                    exchange.update_leverage(leverage, coin, is_cross=is_cross)
+                    print(
+                        "[LEVERAGE] "
+                        f"coin={coin} mode={'cross' if is_cross else 'isolated'} "
+                        f"applied={leverage}x"
+                    )
+                except Exception as lev_exc:
+                    print(
+                        "[WARN] Failed to update leverage before entry: "
+                        f"coin={coin} err={lev_exc}"
+                    )
             result = exchange.market_open(name=coin, is_buy=is_buy, sz=sz, px=price)
         print(f"[SUCCESS][HYPERLIQUID] {result}")
         # Some SDK close paths can return None even when the request succeeds.
@@ -872,6 +941,14 @@ def main_loop(
     print(f"[CONFIG][RM] {json.dumps(RM, sort_keys=True)}")
     print(f"[CONFIG][LV] {json.dumps(LV, sort_keys=True)}")
     print(f"[CONFIG][LG] {json.dumps(LG, sort_keys=True)}")
+    print(
+        "[CONFIG][LEVERAGE] "
+        f"enabled={HL_LEVERAGE_ENABLED} | "
+        f"margin_mode={HL_MARGIN_MODE} | "
+        f"default={HL_DEFAULT_LEVERAGE}x | "
+        f"max_cap={HL_MAX_LEVERAGE_CAP}x | "
+        f"by_coin={json.dumps(HL_LEVERAGE_BY_COIN, sort_keys=True)}"
+    )
     print(
         "[CONFIG][EFFECTIVE_SAFETY] "
         f"position_size={TP.get('position_size')} | "
