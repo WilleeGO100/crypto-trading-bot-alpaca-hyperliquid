@@ -34,7 +34,12 @@ from src.market_analysis_manager import MarketAnalysisManager
 from src.signal_generator import SignalGenerator
 
 BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env", override=True)
+
+BOT_PROFILE = os.getenv("BOT_PROFILE", "").strip().lower()
+if BOT_PROFILE in {"alpaca", "hyperliquid"}:
+    # Profile from launcher is authoritative for execution venue.
+    os.environ["BROKER"] = BOT_PROFILE
 
 DATA_DIR = BASE_DIR / "data"
 CONFIG_DIR = BASE_DIR / "config"
@@ -48,7 +53,6 @@ TRADES_FILE = DATA_DIR / "trade_signals.csv"
 AGENT_CONFIG_PATH = CONFIG_DIR / "agent_config.json"
 RISK_RULES_PATH = CONFIG_DIR / "risk_rules.json"
 
-SYMBOL = os.getenv("TRADE_SYMBOL", "BTC/USD")
 BROKER = os.getenv("BROKER", "alpaca").strip().lower()
 
 # --- Broker Environment Setup ---
@@ -72,6 +76,18 @@ ALPACA_PAPER_TRADE = os.getenv("ALPACA_PAPER_TRADE", "True").lower() == "true"
 REQUIRE_GAMMA_IN_PAPER = os.getenv("REQUIRE_GAMMA_IN_PAPER", "False").lower() == "true"
 
 
+def _sanitize_env_secret(value: str) -> str:
+    return value.strip().strip('"').strip("'")
+
+
+ALPACA_API_KEY = _sanitize_env_secret(ALPACA_API_KEY)
+ALPACA_SECRET_KEY = _sanitize_env_secret(ALPACA_SECRET_KEY)
+ALPACA_AUTH_BACKOFF_SECONDS = float(os.getenv("ALPACA_AUTH_BACKOFF_SECONDS", "300"))
+ALPACA_AUTH_PAUSE_UNTIL = 0.0
+ALPACA_LAST_AUTH_LOG_EPOCH = 0.0
+POSITION_MAX_HOLD_MINUTES = float(os.getenv("POSITION_MAX_HOLD_MINUTES", "45"))
+
+
 def _normalize_alpaca_symbol(symbol: str) -> str:
     raw = symbol.strip().upper()
     if "/" in raw:
@@ -85,6 +101,14 @@ def _normalize_alpaca_symbol(symbol: str) -> str:
     if raw.endswith("USD") and len(raw) > 3:
         return f"{raw[:-3]}/USD"
     return raw
+
+
+if BROKER == "alpaca":
+    normalized_symbol = _normalize_alpaca_symbol(os.getenv("TRADE_SYMBOL", "BTC/USD"))
+    os.environ["TRADE_SYMBOL"] = normalized_symbol
+    os.environ["ALPACA_SYMBOL"] = normalized_symbol
+
+SYMBOL = os.getenv("TRADE_SYMBOL", "BTC/USD")
 
 if BROKER == "hyperliquid":
     if IS_TESTNET:
@@ -181,11 +205,15 @@ LV = AGENT_CONFIG["levels"]
 LG = AGENT_CONFIG["logging"]
 
 POLL_SECONDS = float(LG.get("poll_seconds", 2))
-COOLDOWN_SECONDS = float(TP.get("cooldown_seconds", 20))
+
+
+def current_cooldown_seconds() -> float:
+    return float(TP.get("cooldown_seconds", 20))
 
 AGGRESSIVE_GAMMA_OVERRIDE = os.getenv("ALLOW_GAMMA_OVERRIDE", "False").lower() == "true"
 GAMMA_PRICE_BUFFER = float(os.getenv("GAMMA_PRICE_BUFFER", "5"))
 IS_PAPER_MODE = (BROKER == "alpaca" and ALPACA_PAPER_TRADE) or (BROKER == "hyperliquid" and IS_TESTNET)
+BYPASS_FVG_REQUIREMENT = os.getenv("BYPASS_FVG_REQUIREMENT", "False").lower() == "true"
 
 
 def utc_now() -> datetime:
@@ -345,6 +373,41 @@ def latest_bar_snapshot(df: pd.DataFrame) -> Dict[str, Any]:
     }
 
 
+def build_bypass_setup(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    # Aggressive fallback path when no FVG retest exists.
+    if len(df) < 6:
+        return None
+    closes = pd.to_numeric(df["close"], errors="coerce")
+    highs = pd.to_numeric(df["high"], errors="coerce")
+    lows = pd.to_numeric(df["low"], errors="coerce")
+    if closes.isna().any() or highs.isna().any() or lows.isna().any():
+        return None
+
+    current_price = float(closes.iloc[-1])
+    drift = float(closes.iloc[-1] - closes.iloc[-4])
+    if abs(drift) < 1e-9:
+        return None
+
+    side = "BUY" if drift > 0 else "SELL"
+    if side == "BUY":
+        zone_bottom = float(lows.tail(5).min())
+        zone_top = current_price
+    else:
+        zone_top = float(highs.tail(5).max())
+        zone_bottom = current_price
+
+    return {
+        "side": side,
+        "zone_top": zone_top,
+        "zone_bottom": zone_bottom,
+        "gap_size": abs(drift),
+        "created_bar_index": len(df) - 1,
+        "setup_age_bars": 0,
+        "entry_price": current_price,
+        "reason": "BYPASS_FVG_REQUIREMENT momentum fallback",
+    }
+
+
 def build_trade_plan(
     side: str,
     entry_price: float,
@@ -462,7 +525,7 @@ def can_trade(state: Dict[str, Any]) -> Optional[str]:
         state["pause_until_epoch"] = now_epoch + (pause_minutes * 60)
         save_state(state)
         return "max consecutive losses reached"
-    if now_epoch - float(state.get("last_signal_epoch", 0.0)) < COOLDOWN_SECONDS:
+    if now_epoch - float(state.get("last_signal_epoch", 0.0)) < current_cooldown_seconds():
         return "cooldown active"
     if state.get("open_position"):
         return "position already open"
@@ -493,6 +556,9 @@ def execute_hl_trade(action: str, coin: str, price: float, sz: float) -> Optiona
         else:
             result = exchange.market_open(name=coin, is_buy=is_buy, sz=sz, px=price)
         print(f"[SUCCESS][HYPERLIQUID] {result}")
+        # Some SDK close paths can return None even when the request succeeds.
+        if result is None:
+            return {"status": "ok", "response": None}
         return result
     except Exception as exc:
         print(f"[ERROR] Hyperliquid execution failed: {exc}")
@@ -500,6 +566,8 @@ def execute_hl_trade(action: str, coin: str, price: float, sz: float) -> Optiona
 
 
 def execute_alpaca_trade(action: str, symbol: str, price: float, sz: float) -> Optional[Any]:
+    global ALPACA_AUTH_PAUSE_UNTIL, ALPACA_LAST_AUTH_LOG_EPOCH
+
     if (
         TradingClient is None
         or OrderSide is None
@@ -511,6 +579,18 @@ def execute_alpaca_trade(action: str, symbol: str, price: float, sz: float) -> O
 
     if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
         print("[WARNING] Missing ALPACA_API_KEY/ALPACA_SECRET_KEY. Alpaca trade skipped.")
+        return None
+
+    now_epoch = time.time()
+    if ALPACA_AUTH_PAUSE_UNTIL > now_epoch:
+        remaining = int(ALPACA_AUTH_PAUSE_UNTIL - now_epoch)
+        if now_epoch - ALPACA_LAST_AUTH_LOG_EPOCH >= 30:
+            print(
+                f"[WARN] Alpaca execution paused after auth failure. "
+                f"retry_in={remaining}s",
+                flush=True,
+            )
+            ALPACA_LAST_AUTH_LOG_EPOCH = now_epoch
         return None
 
     try:
@@ -538,7 +618,17 @@ def execute_alpaca_trade(action: str, symbol: str, price: float, sz: float) -> O
         )
         return result
     except Exception as exc:
-        print(f"[ERROR] Alpaca execution failed: {exc}")
+        msg = str(exc)
+        print(f"[ERROR] Alpaca execution failed: {msg}")
+        if "unauthorized" in msg.lower():
+            ALPACA_AUTH_PAUSE_UNTIL = time.time() + ALPACA_AUTH_BACKOFF_SECONDS
+            ALPACA_LAST_AUTH_LOG_EPOCH = 0.0
+            print(
+                "[HINT] Alpaca rejected credentials. Verify API key/secret, "
+                "paper vs live mode, and that trading permissions are enabled. "
+                f"Execution paused for {int(ALPACA_AUTH_BACKOFF_SECONDS)}s before retry.",
+                flush=True,
+            )
         return None
 
 
@@ -570,6 +660,7 @@ def maybe_exit_open_position(
     stop_loss = float(position["stop_loss"])
     target_price = float(position["target_price"])
     entry_price = float(position["entry_price"])
+    entry_epoch = float(position.get("entry_epoch", 0.0) or 0.0)
 
     # Retrieve the exact size we entered with so we can close it fully
     sz = float(position.get("size", TP.get("position_size", 0.01)))
@@ -581,6 +672,13 @@ def maybe_exit_open_position(
     if gamma_reason:
         exit_reason = gamma_reason
         exit_price = gamma_price or close
+
+    if exit_reason is None:
+        if entry_epoch > 0 and POSITION_MAX_HOLD_MINUTES > 0:
+            held_minutes = (time.time() - entry_epoch) / 60.0
+            if held_minutes >= POSITION_MAX_HOLD_MINUTES:
+                exit_reason = "TIME_EXIT"
+                exit_price = close
 
     if exit_reason is None:
         if side == "BUY":
@@ -603,7 +701,14 @@ def maybe_exit_open_position(
 
     # Execute the exit on the blockchain
     action = "EXIT_LONG" if side == "BUY" else "EXIT_SHORT"
-    execute_trade(action=action, symbol=SYMBOL, price=exit_price, sz=sz)
+    exit_result = execute_trade(action=action, symbol=SYMBOL, price=exit_price, sz=sz)
+    if exit_result is None:
+        print(
+            "[WARN] Exit trigger hit but broker execution failed. "
+            "Keeping open_position unchanged so state does not desync.",
+            flush=True,
+        )
+        return None
 
     pnl_points = (
         (exit_price - entry_price) if side == "BUY" else (entry_price - exit_price)
@@ -675,6 +780,19 @@ def main_loop(
     print("--- QUANT ENGINE LIVE LOOP ONLINE ---")
     print(f"[FEED] Monitoring: {LIVE_FEED}")
     print(f"[MANAGER] Analysis: {analysis_manager_cls.__name__}")
+    print(
+        "[CONFIG][ENGINE] "
+        f"broker={BROKER} | bot_profile={BOT_PROFILE or 'none'} | symbol={SYMBOL} | "
+        f"alpaca_paper_trade={ALPACA_PAPER_TRADE} | "
+        f"use_testnet={IS_TESTNET} | poll_seconds={POLL_SECONDS} | "
+        f"alpaca_auth_backoff_seconds={ALPACA_AUTH_BACKOFF_SECONDS} | "
+        f"position_max_hold_minutes={POSITION_MAX_HOLD_MINUTES} | "
+        f"bypass_fvg_requirement={BYPASS_FVG_REQUIREMENT}"
+    )
+    print(f"[CONFIG][TP] {json.dumps(TP, sort_keys=True)}")
+    print(f"[CONFIG][RM] {json.dumps(RM, sort_keys=True)}")
+    print(f"[CONFIG][LV] {json.dumps(LV, sort_keys=True)}")
+    print(f"[CONFIG][LG] {json.dumps(LG, sort_keys=True)}")
     print()
 
     # Log trade thresholds at startup
@@ -686,7 +804,7 @@ def main_loop(
         f"stop_loss_min={RM.get('stop_loss_min')} | "
         f"stop_loss_default={RM.get('stop_loss_default')} | "
         f"stop_loss_max={RM.get('stop_loss_max')} | "
-        f"cooldown_seconds={COOLDOWN_SECONDS} | "
+        f"cooldown_seconds={current_cooldown_seconds()} | "
         f"aggressive_gamma_override={AGGRESSIVE_GAMMA_OVERRIDE} | "
         f"require_gamma_in_paper={REQUIRE_GAMMA_IN_PAPER}"
     )
@@ -708,6 +826,7 @@ def main_loop(
 
     state = load_state()
     last_wait_signature = ""
+    last_no_setup_signature = ""
     last_status_print = time.time()
     STATUS_THROTTLE = 120
 
@@ -775,24 +894,51 @@ def main_loop(
                 continue
 
             setup_obj = analyzer.find_setup(df.tail(150))
-            if not setup_obj:
+            setup: Optional[Dict[str, Any]] = None
+            if setup_obj:
+                setup = setup_obj.to_dict()
+            elif BYPASS_FVG_REQUIREMENT:
+                setup = build_bypass_setup(df.tail(150))
+
+            if not setup:
+                no_setup_reason = (
+                    "no valid FVG retest or fallback setup"
+                    if BYPASS_FVG_REQUIREMENT
+                    else "no valid FVG retest"
+                )
                 snapshot = make_market_snapshot(
                     analysis_manager=analysis_manager,
                     latest_bar=latest_bar,
                     gamma_context=gamma_context,
                     level_context={},
                     setup=None,
-                    decision={"status": "WAIT", "reason": "no valid FVG retest"},
+                    decision={"status": "WAIT", "reason": no_setup_reason},
                     engine_state=state,
                 )
                 try:
                     analysis_manager.save_analysis(snapshot)
                 except Exception as e:
                     print(f"[!] Failed to save analysis: {e}", flush=True)
+                no_setup_sig = "|".join(
+                    (
+                        str(latest_bar.get("datetime")),
+                        str(gamma_context.get("gamma_state", "UNKNOWN")),
+                        str(gamma_context.get("market_regime", "UNKNOWN")),
+                    )
+                )
+                if no_setup_sig != last_no_setup_signature:
+                    print(
+                        f"[WAIT] {no_setup_reason} "
+                        f"| bypass_fvg_requirement={BYPASS_FVG_REQUIREMENT} "
+                        f"| gamma_gate={'DISABLED' if AGGRESSIVE_GAMMA_OVERRIDE else 'ENABLED'} "
+                        f"| gamma={gamma_context.get('gamma_state')} "
+                        f"| regime={gamma_context.get('market_regime')}",
+                        flush=True,
+                    )
+                    last_no_setup_signature = no_setup_sig
                 time.sleep(POLL_SECONDS)
                 continue
 
-            setup = setup_obj.to_dict()
             level_context = detector.analyze_level_context(
                 current_price=current_price, gamma_context=gamma_context
             )
@@ -851,6 +997,17 @@ def main_loop(
                 decision["reason"] = combined
                 decision.pop("trade_plan", None)
 
+            # Alpaca crypto spot is effectively long-only for this strategy flow:
+            # opening a fresh SELL without holdings will be rejected as insufficient balance.
+            if BROKER == "alpaca" and setup["side"] == "SELL":
+                existing_reason = decision.get("reason", "")
+                spot_reason = "alpaca spot long-only mode: skipping SELL entry setup"
+                decision["status"] = "WAIT"
+                decision["reason"] = (
+                    f"{existing_reason} | {spot_reason}" if existing_reason else spot_reason
+                )
+                decision.pop("trade_plan", None)
+
             snapshot = make_market_snapshot(
                 analysis_manager=analysis_manager,
                 latest_bar=latest_bar,
@@ -865,7 +1022,9 @@ def main_loop(
             base_log = (
                 f"[DEBUG] side={setup['side']} conf={confidence:.2f} "
                 f"state={gamma_context['gamma_state']} regime={gamma_context['market_regime']} "
-                f"rr={(trade_plan['risk_reward'] if trade_plan else 0):.2f} reason={decision.get('reason', '')}"
+                f"rr={(trade_plan['risk_reward'] if trade_plan else 0):.2f} "
+                f"gamma_gate={'DISABLED' if AGGRESSIVE_GAMMA_OVERRIDE else 'ENABLED'} "
+                f"reason={decision.get('reason', '')}"
             )
 
             if decision["status"] == "READY":
@@ -892,12 +1051,20 @@ def main_loop(
             # --- EXECUTE THE ENTRY TRADE ---
             position_size_coin = float(TP.get("position_size", 0.01))
 
-            execute_trade(
+            entry_result = execute_trade(
                 action=setup["side"],
                 symbol=SYMBOL,
                 price=trade_plan["entry_price"],
                 sz=position_size_coin,
             )
+            if entry_result is None:
+                print(
+                    "[WARN] Entry setup was READY but broker execution failed. "
+                    "Skipping state/signal update for this attempt.",
+                    flush=True,
+                )
+                time.sleep(POLL_SECONDS)
+                continue
 
             timestamp = utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
             state["last_signal_epoch"] = time.time()
@@ -905,6 +1072,7 @@ def main_loop(
             state["open_position"] = {
                 "side": setup["side"],
                 "size": position_size_coin,  # Saved so we can close this exact amount later
+                "entry_epoch": time.time(),
                 "entry_price": trade_plan["entry_price"],
                 "stop_loss": trade_plan["stop_loss"],
                 "target_price": trade_plan["target_price"],
@@ -936,6 +1104,9 @@ def main_loop(
                 f"conf={confidence:.2f}"
             )
 
+        except KeyboardInterrupt:
+            print("[INFO] Engine stop requested. Exiting main loop.", flush=True)
+            break
         except Exception as exc:
             print(f"[ERROR] ENGINE ERROR: {exc}", flush=True)
             time.sleep(5)

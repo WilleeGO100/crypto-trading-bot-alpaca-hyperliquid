@@ -5,7 +5,14 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 
-os.environ.setdefault("BROKER", "hyperliquid")
+profile = os.getenv("BOT_PROFILE", "").strip().lower()
+if profile == "alpaca":
+    os.environ["BROKER"] = "alpaca"
+elif profile == "hyperliquid":
+    os.environ["BROKER"] = "hyperliquid"
+else:
+    os.environ.setdefault("BROKER", "hyperliquid")
+
 broker = os.getenv("BROKER", "").strip().lower()
 
 if broker == "alpaca":
@@ -33,25 +40,24 @@ from src.btc_market_analysis_manager import BTCMarketAnalysisManager
 def _sync_backtest_params() -> None:
     print("[PARAM OVERRIDE] Applying Bitcoin parameters...")
 
-    # Trading Params
+    # Trading Params (balanced "live-like" profile for paper forward-testing)
     trading_params = TP
-    trading_params["min_gap_size"] = 2.0
-    trading_params["max_gap_age_bars"] = 120
-    trading_params["min_risk_reward"] = 0.5
-    trading_params["confidence_threshold"] = 0.1
-    trading_params["cooldown_seconds"] = 2
+    trading_params["min_gap_size"] = 4.0
+    trading_params["max_gap_age_bars"] = 80
+    trading_params["min_risk_reward"] = 1.0
+    trading_params["confidence_threshold"] = 0.4
+    trading_params["cooldown_seconds"] = 20
     AGENT_CONFIG["trading_params"] = trading_params
 
-    # Risk Management (SCALED FOR BITCOIN)
-    # Keep stops permissive so paper mode can actually take trades quickly.
+    # Risk Management (scaled and tighter for live-like behavior)
     risk_params = RM
-    risk_params["stop_loss_min"] = 10
-    risk_params["stop_loss_default"] = 30
-    risk_params["stop_loss_max"] = 250
-    risk_params["stop_buffer"] = 0.5
-    risk_params["max_daily_trades"] = 50
-    risk_params["max_daily_loss"] = 5000
-    risk_params["max_consecutive_losses"] = 20
+    risk_params["stop_loss_min"] = 12
+    risk_params["stop_loss_default"] = 25
+    risk_params["stop_loss_max"] = 80
+    risk_params["stop_buffer"] = 1.5
+    risk_params["max_daily_trades"] = 15
+    risk_params["max_daily_loss"] = 300
+    risk_params["max_consecutive_losses"] = 5
     AGENT_CONFIG["risk_management"] = risk_params
 
 

@@ -25,7 +25,7 @@ except Exception:
 
 
 BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env", override=True)
 
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -48,6 +48,16 @@ ALPACA_SECRET_KEY = (
 
 POLL_SECONDS = float(os.getenv("FEED_POLL_SECONDS", "5"))
 HISTORY_LIMIT = int(os.getenv("FEED_HISTORY_LIMIT", "200"))
+ALLOW_GAMMA_OVERRIDE = os.getenv("ALLOW_GAMMA_OVERRIDE", "False").strip().lower() == "true"
+
+_raw_use_deribit = os.getenv("USE_DERIBIT_GAMMA", "").strip().lower()
+if _raw_use_deribit in {"1", "true", "yes", "on"}:
+    USE_DERIBIT_GAMMA = True
+elif _raw_use_deribit in {"0", "false", "no", "off"}:
+    USE_DERIBIT_GAMMA = False
+else:
+    # Default behavior: if strategy bypasses gamma gate, skip Deribit dependency.
+    USE_DERIBIT_GAMMA = not ALLOW_GAMMA_OVERRIDE
 
 ORDERED_COLS = [
     "datetime",
@@ -67,6 +77,15 @@ ORDERED_COLS = [
     "dist_to_put_wall",
     "inside_walls",
 ]
+
+
+def _sanitize_env_secret(value: str) -> str:
+    # Helps with accidental quoted values in .env like "KEY" or 'KEY'.
+    return value.strip().strip('"').strip("'")
+
+
+ALPACA_API_KEY = _sanitize_env_secret(ALPACA_API_KEY)
+ALPACA_SECRET_KEY = _sanitize_env_secret(ALPACA_SECRET_KEY)
 
 
 def _iso_utc_now() -> str:
@@ -124,10 +143,11 @@ def _ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
 def _add_gamma(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     base_asset = _extract_base_asset()
-    if base_asset == "BTC":
+    if base_asset == "BTC" and USE_DERIBIT_GAMMA:
         gex = get_btc_gamma_snapshot()
     else:
         # BTC gamma data should not be reused for non-BTC symbols.
+        # Also allow intentionally skipping Deribit when gamma is overridden.
         gex = {
             "spot_price": None,
             "gamma_flip": None,
@@ -322,23 +342,54 @@ def seed_from_alpaca_history(symbol: str) -> Optional[pd.DataFrame]:
         return None
 
 
+def validate_alpaca_data_access(symbol: str) -> None:
+    if (
+        CryptoHistoricalDataClient is None
+        or CryptoBarsRequest is None
+        or TimeFrame is None
+    ):
+        raise RuntimeError("alpaca-py historical data modules are unavailable.")
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        raise RuntimeError(
+            "ALPACA_API_KEY/ALPACA_SECRET_KEY missing or empty after sanitizing .env values."
+        )
+
+    try:
+        client = CryptoHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+        req = CryptoBarsRequest(
+            symbol_or_symbols=[symbol],
+            timeframe=TimeFrame.Minute,
+            start=datetime.now(timezone.utc) - timedelta(minutes=30),
+            limit=1,
+        )
+        client.get_crypto_bars(req, feed=_resolve_crypto_feed())
+    except Exception as exc:
+        msg = str(exc)
+        raise RuntimeError(
+            f"Alpaca auth/entitlement precheck failed for {symbol} on feed={ALPACA_FEED}: {msg}"
+        ) from exc
+
+
 def run_yfinance_loop() -> None:
     print(f"[INFO] yfinance feeder online [{SYMBOL}]")
     print(f"[INFO] Output: {LIVE_FEED}")
     ensure_live_feed_exists()
-    while True:
-        df = get_market_frame()
-        if df is not None and not df.empty:
-            atomic_write(df)
-            current_close = float(df["close"].iloc[-1])
-            gamma_state = str(df["gamma_state"].iloc[-1])
-            print(
-                f"[INFO] [{datetime.now().strftime('%H:%M:%S')}] "
-                f"LiveFeed Updated | {SYMBOL} @ {current_close:.2f} | {gamma_state}"
-            )
-        else:
-            print(f"[WARN] [{datetime.now().strftime('%H:%M:%S')}] feed update skipped")
-        time.sleep(POLL_SECONDS)
+    try:
+        while True:
+            df = get_market_frame()
+            if df is not None and not df.empty:
+                atomic_write(df)
+                current_close = float(df["close"].iloc[-1])
+                gamma_state = str(df["gamma_state"].iloc[-1])
+                print(
+                    f"[INFO] [{datetime.now().strftime('%H:%M:%S')}] "
+                    f"LiveFeed Updated | {SYMBOL} @ {current_close:.2f} | {gamma_state}"
+                )
+            else:
+                print(f"[WARN] [{datetime.now().strftime('%H:%M:%S')}] feed update skipped")
+            time.sleep(POLL_SECONDS)
+    except KeyboardInterrupt:
+        print("[INFO] yfinance feeder stop requested.", flush=True)
 
 
 def run_alpaca_ws() -> None:
@@ -348,6 +399,7 @@ def run_alpaca_ws() -> None:
         raise RuntimeError("ALPACA_API_KEY/ALPACA_SECRET_KEY are required for Alpaca websocket feed.")
 
     symbol = _normalize_alpaca_symbol(ALPACA_SYMBOL)
+    validate_alpaca_data_access(symbol)
     print(f"[INFO] Alpaca websocket feeder online [{symbol}] feed={ALPACA_FEED}")
     print(f"[INFO] Output: {LIVE_FEED}")
 
@@ -404,16 +456,28 @@ def run_alpaca_ws() -> None:
 
 
 def run() -> None:
+    print(
+        "[CONFIG][FEED] "
+        f"source={FEED_SOURCE} | market_symbol={SYMBOL} | alpaca_symbol={ALPACA_SYMBOL} | "
+        f"alpaca_feed={ALPACA_FEED} | poll_seconds={POLL_SECONDS} | history_limit={HISTORY_LIMIT} | "
+        f"base_asset={_extract_base_asset()} | deribit_gamma_enabled={USE_DERIBIT_GAMMA}"
+    )
     source = FEED_SOURCE
-    if source in {"alpaca", "alpaca_ws", "alpaca-websocket"}:
-        try:
-            run_alpaca_ws()
-            return
-        except Exception as exc:
-            print(f"[WARN] Alpaca websocket unavailable, falling back to yfinance: {exc}")
-            run_yfinance_loop()
-            return
-    run_yfinance_loop()
+    try:
+        if source in {"alpaca", "alpaca_ws", "alpaca-websocket"}:
+            try:
+                run_alpaca_ws()
+                return
+            except Exception as exc:
+                print(
+                    "[WARN] Alpaca websocket unavailable (auth/rate-limit/sdk issue). "
+                    f"Falling back to yfinance: {exc}"
+                )
+                run_yfinance_loop()
+                return
+        run_yfinance_loop()
+    except KeyboardInterrupt:
+        print("[INFO] Feeder stop requested.", flush=True)
 
 
 if __name__ == "__main__":

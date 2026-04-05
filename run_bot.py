@@ -19,6 +19,7 @@ BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
 HYPERLIQUID_ENV = {
+    "BOT_PROFILE": "hyperliquid",
     "BROKER": "hyperliquid",
     "TRADE_SYMBOL": "BTC",
     "MARKET_SYMBOL": "BTC-USD",
@@ -97,6 +98,7 @@ def main():
 
     env_snapshot = os.environ.copy()
     env_snapshot["BROKER"] = "hyperliquid"
+    env_snapshot["BOT_PROFILE"] = "hyperliquid"
     env_snapshot["TRADE_SYMBOL"] = selected["trade_symbol"]
     env_snapshot["MARKET_SYMBOL"] = selected["market_symbol"]
     env_snapshot["GEX_SYMBOL"] = selected["coin"]

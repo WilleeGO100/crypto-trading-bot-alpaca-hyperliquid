@@ -1,0 +1,24 @@
+{
+  "underlying_symbol": "SPY",
+  "strategy_name": "poor_man_covered_put",
+  "long_put_dte_min": 120,
+  "long_put_dte_max": 540,
+  "short_put_dte_min": 21,
+  "short_put_dte_max": 45,
+  "target_long_delta_abs": 0.8,
+  "target_short_delta_abs": 0.3,
+  "min_open_interest": 50,
+  "max_net_debit_per_spread": 30.0,
+  "contracts_qty": 1,
+  "broker": "alpaca",
+  "alpaca_paper_trade": true,
+  "options_feed": "indicative",
+  "min_options_level": 3,
+  "dry_run": true,
+  "submit_orders": false,
+  "data_dir": "data/options",
+  "state_file": "data/options/pmcp_state.json",
+  "plans_csv": "data/options/pmcp_plans.csv",
+  "last_plan_json": "data/options/pmcp_last_plan.json"
+}
+
