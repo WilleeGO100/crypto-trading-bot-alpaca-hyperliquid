@@ -16,12 +16,45 @@ from market_data_feeder import LIVE_FEED, atomic_write, get_market_frame
 load_dotenv()
 
 SYMBOL = os.getenv("TRADE_SYMBOL", "BTC")
+SYMBOL_MARKER = LIVE_FEED.with_name("LiveFeed.symbol.txt")
 
 # --- Environment Setup ---
 IS_TESTNET = os.getenv("USE_TESTNET", "True").lower() == "true"
 BASE_URL = TESTNET_API_URL if IS_TESTNET else MAINNET_API_URL
 
 _ohlcv_cache = pd.DataFrame()
+
+
+def _read_symbol_marker() -> str:
+    try:
+        if SYMBOL_MARKER.exists():
+            return SYMBOL_MARKER.read_text(encoding="utf-8").strip().upper()
+    except Exception:
+        pass
+    return ""
+
+
+def _write_symbol_marker(symbol: str) -> None:
+    try:
+        SYMBOL_MARKER.write_text(symbol.strip().upper(), encoding="utf-8")
+    except Exception as exc:
+        print(f"[WARN] Unable to persist feed symbol marker: {exc}")
+
+
+def _reset_feed_if_symbol_changed() -> None:
+    previous = _read_symbol_marker()
+    current = SYMBOL.strip().upper()
+    if previous and previous != current:
+        print(
+            f"[INFO] Feed symbol changed ({previous} -> {current}). "
+            "Resetting cached LiveFeed.csv to prevent mixed-price history."
+        )
+        try:
+            if LIVE_FEED.exists():
+                LIVE_FEED.unlink()
+        except Exception as exc:
+            print(f"[WARN] Unable to reset LiveFeed.csv: {exc}")
+    _write_symbol_marker(current)
 
 
 def _load_existing_feed() -> Optional[pd.DataFrame]:
@@ -39,6 +72,7 @@ def _load_existing_feed() -> Optional[pd.DataFrame]:
 
 def seed_ohlcv_cache() -> None:
     global _ohlcv_cache
+    _reset_feed_if_symbol_changed()
     existing = _load_existing_feed()
     if existing is not None and len(existing) >= 10:
         _ohlcv_cache = existing.tail(150).reset_index(drop=True)

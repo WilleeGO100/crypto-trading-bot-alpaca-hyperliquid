@@ -34,7 +34,8 @@ from src.market_analysis_manager import MarketAnalysisManager
 from src.signal_generator import SignalGenerator
 
 BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env", override=True)
+# Do not override process env so launcher-selected runtime symbols are preserved.
+load_dotenv(BASE_DIR / ".env", override=False)
 
 BOT_PROFILE = os.getenv("BOT_PROFILE", "").strip().lower()
 if BOT_PROFILE in {"alpaca", "hyperliquid"}:

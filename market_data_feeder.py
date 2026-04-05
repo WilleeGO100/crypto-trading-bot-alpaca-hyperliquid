@@ -25,7 +25,8 @@ except Exception:
 
 
 BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env", override=True)
+# Do not override process env so launcher-selected runtime symbols are preserved.
+load_dotenv(BASE_DIR / ".env", override=False)
 
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
