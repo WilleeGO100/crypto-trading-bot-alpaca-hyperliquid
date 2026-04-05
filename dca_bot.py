@@ -1,7 +1,7 @@
 import os
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import pandas as pd
 import requests
@@ -14,6 +14,16 @@ class DcaLevel:
     price: float
     weight: float
     qty: float
+
+
+@dataclass
+class WinScenario:
+    name: str
+    avg_price: float
+    qty: float
+    tp: float
+    profit_usd: float
+    profit_pct_account: float
 
 
 def _load_runtime() -> Tuple[str, str, str]:
@@ -142,32 +152,57 @@ def _fib_entries(side: str, swing_low: float, swing_high: float, fib_levels: Lis
 
 def _plan_levels(
     side: str,
-    fib_levels: List[float],
-    entries: List[float],
+    prices: List[float],
+    labels: List[float],
     stop_price: float,
     risk_usd: float,
     weights: List[float],
     qty_step: float,
-) -> Tuple[List[DcaLevel], float, float]:
-    if not entries or risk_usd <= 0:
+) -> Tuple[List[DcaLevel], float]:
+    if not prices or risk_usd <= 0:
         return [], 0.0, 0.0
-    total_w = sum(weights[: len(entries)])
+    total_w = sum(weights[: len(prices)])
     if total_w <= 0:
-        return [], 0.0, 0.0
+        return [], 0.0
 
-    weighted_entry = sum(p * w for p, w in zip(entries, weights)) / total_w
+    weighted_entry = sum(p * w for p, w in zip(prices, weights)) / total_w
     risk_per_unit = (weighted_entry - stop_price) if side == "LONG" else (stop_price - weighted_entry)
     if risk_per_unit <= 0:
-        return [], 0.0, 0.0
+        return [], 0.0
 
     total_qty = risk_usd / risk_per_unit
     levels: List[DcaLevel] = []
-    for fib, price, w in zip(fib_levels, entries, weights):
+    for label, price, w in zip(labels, prices, weights):
         qty = total_qty * (w / total_w)
         if qty_step > 0:
             qty = max(qty_step, round(qty / qty_step) * qty_step)
-        levels.append(DcaLevel(level=float(fib), price=float(price), weight=float(w), qty=float(qty)))
-    return levels, total_qty, weighted_entry
+        levels.append(DcaLevel(level=float(label), price=float(price), weight=float(w), qty=float(qty)))
+    return levels, total_qty
+
+
+def _weighted_avg(prices: List[float], qtys: List[float]) -> float:
+    total = sum(qtys)
+    if total <= 0:
+        return 0.0
+    return sum(p * q for p, q in zip(prices, qtys)) / total
+
+
+def _tp_from_avg(side: str, avg_price: float, target_profit_pct: float) -> float:
+    if side == "LONG":
+        return avg_price * (1.0 + target_profit_pct)
+    return avg_price * (1.0 - target_profit_pct)
+
+
+def _profit_from_tp(side: str, avg_price: float, tp: float, qty: float) -> float:
+    if side == "LONG":
+        return (tp - avg_price) * qty
+    return (avg_price - tp) * qty
+
+
+def _loss_at_stop(side: str, avg_price: float, stop: float, qty: float) -> float:
+    if side == "LONG":
+        return (avg_price - stop) * qty
+    return (stop - avg_price) * qty
 
 
 def _wallet_withdrawable(url: str, address: str) -> float:
@@ -205,17 +240,21 @@ def main() -> None:
 
     fib_levels_raw = os.getenv("TCL_FIB_LEVELS", "0.382,0.5,0.618")
     fib_levels = [float(x.strip()) for x in fib_levels_raw.split(",") if x.strip()]
-    fib_weights_raw = os.getenv("TCL_DCA_WEIGHTS", "1,2,3")
-    fib_weights = [float(x.strip()) for x in fib_weights_raw.split(",") if x.strip()]
-    if len(fib_weights) < len(fib_levels):
-        fib_weights = fib_weights + [fib_weights[-1]] * (len(fib_levels) - len(fib_weights))
 
     swing_lookback = int(os.getenv("TCL_SWING_LOOKBACK", "80"))
     swing_low, swing_high = _swing_points(df, lookback=swing_lookback)
-    entry_prices = _fib_entries(side, swing_low, swing_high, fib_levels)
-    if not entry_prices:
-        print("[TCL] Unable to compute Fibonacci DCA entries.")
+    fib_prices = _fib_entries(side, swing_low, swing_high, fib_levels)
+    if len(fib_prices) < 2:
+        print("[TCL] Unable to compute Fibonacci limit entries.")
         return
+    if side == "LONG":
+        fib_prices = sorted(fib_prices, reverse=True)
+    else:
+        fib_prices = sorted(fib_prices)
+
+    entry_price = mark
+    limit1_price = fib_prices[0]
+    limit2_price = fib_prices[1]
 
     atr = _atr(df, period=14)
     stop_buffer_atr = float(os.getenv("TCL_STOP_BUFFER_ATR", "0.2"))
@@ -225,37 +264,130 @@ def main() -> None:
         stop = swing_high + atr * stop_buffer_atr
 
     account_usd = _wallet_withdrawable(info_url, address)
-    risk_pct = float(os.getenv("TCL_RISK_PCT", "0.01"))
-    risk_usd = max(0.0, account_usd * risk_pct)
+    account_size_override = float(os.getenv("TCL_ACCOUNT_SIZE_OVERRIDE", "0"))
+    if account_size_override > 0:
+        account_usd = account_size_override
+    if account_usd <= 0:
+        print("[TCL] Account size unavailable. Set TCL_ACCOUNT_SIZE_OVERRIDE in .env.")
+        return
+
+    account_risk_pct = float(os.getenv("TCL_ACCOUNT_RISK_PCT", "2")) / 100.0
+    risk_usd = max(0.0, account_usd * account_risk_pct)
     qty_step = float(os.getenv("TCL_QTY_STEP", "0.001"))
+
+    limits_to_use = int(float(os.getenv("TCL_LIMITS_TO_USE", "2")))
+    limits_to_use = max(0, min(2, limits_to_use))
+    manage1 = float(os.getenv("TCL_MANAGE_1", "4"))
+    manage2 = float(os.getenv("TCL_MANAGE_2", "7.3"))
+    base_weights = [1.0, manage1, manage2]
+
+    planned_prices = [entry_price]
+    planned_labels = [0.0]
+    if limits_to_use >= 1:
+        planned_prices.append(limit1_price)
+        planned_labels.append(1.0)
+    if limits_to_use >= 2:
+        planned_prices.append(limit2_price)
+        planned_labels.append(2.0)
+
     levels, total_qty, avg_entry = _plan_levels(
         side=side,
-        fib_levels=fib_levels,
-        entries=entry_prices,
+        prices=planned_prices,
+        labels=planned_labels,
         stop_price=stop,
         risk_usd=risk_usd,
-        weights=fib_weights,
+        weights=base_weights[: len(planned_prices)],
         qty_step=qty_step,
     )
     if not levels:
         print("[TCL] Invalid sizing plan (risk distance too tight or wallet unavailable).")
         return
 
-    min_rr = float(os.getenv("TCL_MIN_RR", "1.5"))
-    if side == "LONG":
-        tp = avg_entry + (avg_entry - stop) * min_rr
-    else:
-        tp = avg_entry - (stop - avg_entry) * min_rr
-
+    target_profit_pct = float(os.getenv("TCL_TARGET_PROFIT_PCT", "0.015"))
     notional = total_qty * avg_entry
-    leverage = float(os.getenv("HL_DEFAULT_LEVERAGE", "1"))
+    leverage = float(os.getenv("TCL_LEVERAGE", os.getenv("HL_DEFAULT_LEVERAGE", "1")))
+    margin_used = notional / leverage if leverage > 0 else notional
+    margin_pct = (margin_used / account_usd) * 100 if account_usd > 0 else 0.0
 
-    print(f"[TCL] Wallet Withdrawable=${account_usd:.2f} | Risk=${risk_usd:.2f} ({risk_pct*100:.2f}%)")
+    qtys = [lvl.qty for lvl in levels]
+    prices = [lvl.price for lvl in levels]
+    entry_qty = qtys[0]
+    entry_avg = prices[0]
+    entry_tp = _tp_from_avg(side, entry_avg, target_profit_pct)
+    entry_profit = _profit_from_tp(side, entry_avg, entry_tp, entry_qty)
+    scenarios: List[WinScenario] = [
+        WinScenario(
+            name="TCL Entry Win",
+            avg_price=entry_avg,
+            qty=entry_qty,
+            tp=entry_tp,
+            profit_usd=entry_profit,
+            profit_pct_account=(entry_profit / account_usd) * 100,
+        )
+    ]
+
+    if len(levels) >= 2:
+        avg2 = _weighted_avg(prices[:2], qtys[:2])
+        qty2 = sum(qtys[:2])
+        tp2 = _tp_from_avg(side, avg2, target_profit_pct)
+        p2 = _profit_from_tp(side, avg2, tp2, qty2)
+        scenarios.append(
+            WinScenario(
+                name="TCL Limit 1 Win",
+                avg_price=avg2,
+                qty=qty2,
+                tp=tp2,
+                profit_usd=p2,
+                profit_pct_account=(p2 / account_usd) * 100,
+            )
+        )
+    if len(levels) >= 3:
+        avg3 = _weighted_avg(prices[:3], qtys[:3])
+        qty3 = sum(qtys[:3])
+        tp3 = _tp_from_avg(side, avg3, target_profit_pct)
+        p3 = _profit_from_tp(side, avg3, tp3, qty3)
+        scenarios.append(
+            WinScenario(
+                name="TCL Limit 2 Win",
+                avg_price=avg3,
+                qty=qty3,
+                tp=tp3,
+                profit_usd=p3,
+                profit_pct_account=(p3 / account_usd) * 100,
+            )
+        )
+
+    full_loss = _loss_at_stop(side, avg_entry, stop, total_qty)
+
+    print(
+        f"[TCL] Account=${account_usd:.2f} | Risk=${risk_usd:.2f} "
+        f"({account_risk_pct*100:.2f}%) | Leverage={leverage:.1f}x "
+        f"| Margin~{margin_pct:.2f}%"
+    )
     print(f"[TCL] SwingLow={swing_low:.4f} SwingHigh={swing_high:.4f} ATR14={atr:.4f}")
-    print(f"[TCL] Stop={stop:.4f} | AvgEntry={avg_entry:.4f} | TP={tp:.4f} | RR={min_rr:.2f}")
-    print(f"[TCL] TotalQty={total_qty:.6f} | Notional=${notional:.2f} | PlannedLev~{leverage:.1f}x")
-    for i, lvl in enumerate(levels, start=1):
-        print(f"[TCL] DCA{i} fib={lvl.level:.0f} price={lvl.price:.4f} qty={lvl.qty:.6f} weight={lvl.weight:.2f}")
+    print(
+        f"[TCL] Entry={entry_price:.4f} | Limit1={limit1_price:.4f} | "
+        f"Limit2={limit2_price:.4f} | Stop={stop:.4f}"
+    )
+    print(
+        f"[TCL] Target Profit %={target_profit_pct*100:.2f} | LimitsUsed={limits_to_use} "
+        f"| Manage1={manage1:.2f} | Manage2={manage2:.2f}"
+    )
+    for name, lvl in zip(["Entry", "Limit 1", "Limit 2"], levels):
+        print(
+            f"[TCL] {name}: price={lvl.price:.4f} qty={lvl.qty:.6f} "
+            f"weight={lvl.weight:.2f}"
+        )
+    print(f"[TCL] Weighted Avg (all planned fills)={avg_entry:.4f} | TotalQty={total_qty:.6f}")
+    for sc in scenarios:
+        print(
+            f"[TCL] {sc.name}: avg={sc.avg_price:.4f} tp={sc.tp:.4f} qty={sc.qty:.6f} "
+            f"profit=${sc.profit_usd:.2f} ({sc.profit_pct_account:.2f}%)"
+        )
+    print(
+        f"[TCL] Full-size SL (all planned fills): loss=${full_loss:.2f} "
+        f"({(full_loss/account_usd)*100:.2f}%)"
+    )
     print("[TCL] Plan generated (no orders sent).")
 
 
