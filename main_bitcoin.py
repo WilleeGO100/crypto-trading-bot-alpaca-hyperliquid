@@ -39,6 +39,9 @@ from src.btc_market_analysis_manager import BTCMarketAnalysisManager
 
 def _sync_backtest_params() -> None:
     print("[PARAM OVERRIDE] Applying Bitcoin parameters...")
+    max_daily_loss = float(os.getenv("BOT_MAX_DAILY_LOSS", "50"))
+    position_size = float(os.getenv("BOT_POSITION_SIZE", "0.001"))
+    max_consecutive_losses = int(os.getenv("BOT_MAX_CONSECUTIVE_LOSSES", "5"))
 
     # Trading Params (balanced "live-like" profile for paper forward-testing)
     trading_params = TP
@@ -47,6 +50,7 @@ def _sync_backtest_params() -> None:
     trading_params["min_risk_reward"] = 1.0
     trading_params["confidence_threshold"] = 0.4
     trading_params["cooldown_seconds"] = 20
+    trading_params["position_size"] = position_size
     AGENT_CONFIG["trading_params"] = trading_params
 
     # Risk Management (scaled and tighter for live-like behavior)
@@ -56,9 +60,14 @@ def _sync_backtest_params() -> None:
     risk_params["stop_loss_max"] = 80
     risk_params["stop_buffer"] = 1.5
     risk_params["max_daily_trades"] = 15
-    risk_params["max_daily_loss"] = 300
-    risk_params["max_consecutive_losses"] = 5
+    risk_params["max_daily_loss"] = max_daily_loss
+    risk_params["max_consecutive_losses"] = max_consecutive_losses
     AGENT_CONFIG["risk_management"] = risk_params
+    print(
+        f"[PARAM OVERRIDE] position_size={position_size} "
+        f"max_daily_loss={max_daily_loss} "
+        f"max_consecutive_losses={max_consecutive_losses}"
+    )
 
 
 def main() -> None:

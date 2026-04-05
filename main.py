@@ -21,12 +21,12 @@ except Exception:
 try:
     from alpaca.trading.client import TradingClient
     from alpaca.trading.enums import OrderSide, TimeInForce
-    from alpaca.trading.requests import MarketOrderRequest
+    from alpaca.trading.requests import LimitOrderRequest
 except Exception:
     TradingClient = None
     OrderSide = None
     TimeInForce = None
-    MarketOrderRequest = None
+    LimitOrderRequest = None
 
 from src.fvg_analyzer import FVGAnalyzer
 from src.level_detector import LevelDetector
@@ -49,6 +49,7 @@ CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 LIVE_FEED = DATA_DIR / "LiveFeed.csv"
 STATE_FILE = DATA_DIR / "engine_state.json"
 TRADES_FILE = DATA_DIR / "trade_signals.csv"
+EXEC_TELEMETRY_FILE = DATA_DIR / "execution_telemetry.csv"
 
 AGENT_CONFIG_PATH = CONFIG_DIR / "agent_config.json"
 RISK_RULES_PATH = CONFIG_DIR / "risk_rules.json"
@@ -204,6 +205,22 @@ RM = AGENT_CONFIG["risk_management"]
 LV = AGENT_CONFIG["levels"]
 LG = AGENT_CONFIG["logging"]
 
+# Optional env safety overrides so both entrypoints (main.py and main_bitcoin.py)
+# can enforce identical risk and sizing controls without code edits.
+env_position_size = os.getenv("BOT_POSITION_SIZE", "").strip()
+if env_position_size:
+    TP["position_size"] = float(env_position_size)
+
+env_max_daily_loss = os.getenv("BOT_MAX_DAILY_LOSS", "").strip()
+if env_max_daily_loss:
+    RM["max_daily_loss"] = float(env_max_daily_loss)
+
+env_max_consecutive_losses = os.getenv("BOT_MAX_CONSECUTIVE_LOSSES", "").strip()
+if env_max_consecutive_losses:
+    RM["max_consecutive_losses"] = int(env_max_consecutive_losses)
+
+EXECUTION_SLIPPAGE_ALERT_USD = float(os.getenv("EXECUTION_SLIPPAGE_ALERT_USD", "10"))
+
 POLL_SECONDS = float(LG.get("poll_seconds", 2))
 
 
@@ -218,6 +235,67 @@ BYPASS_FVG_REQUIREMENT = os.getenv("BYPASS_FVG_REQUIREMENT", "False").lower() ==
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _safe_to_epoch(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        ts = pd.to_datetime(value, errors="coerce", utc=True)
+        if pd.isna(ts):
+            return None
+        return float(ts.timestamp())
+    except Exception:
+        return None
+
+
+def _safe_to_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _extract_execution_meta(result: Any) -> Dict[str, Any]:
+    keys = (
+        "id",
+        "status",
+        "submitted_at",
+        "filled_at",
+        "filled_avg_price",
+        "limit_price",
+        "created_at",
+        "updated_at",
+    )
+    out: Dict[str, Any] = {}
+    if result is None:
+        return out
+    if isinstance(result, dict):
+        for k in keys:
+            if k in result and result[k] is not None:
+                out[k] = result[k]
+        return out
+    for k in keys:
+        v = getattr(result, k, None)
+        if v is not None:
+            out[k] = v
+    return out
+
+
+def append_execution_telemetry(row: Dict[str, Any]) -> None:
+    try:
+        record = pd.DataFrame([row])
+        write_header = not EXEC_TELEMETRY_FILE.exists()
+        record.to_csv(
+            EXEC_TELEMETRY_FILE,
+            mode="a",
+            index=False,
+            header=write_header,
+        )
+    except Exception as exc:
+        print(f"[WARN] Failed to append execution telemetry: {exc}", flush=True)
 
 
 def default_state() -> Dict[str, Any]:
@@ -572,7 +650,7 @@ def execute_alpaca_trade(action: str, symbol: str, price: float, sz: float) -> O
         TradingClient is None
         or OrderSide is None
         or TimeInForce is None
-        or MarketOrderRequest is None
+        or LimitOrderRequest is None
     ):
         print("[ERROR] Alpaca SDK unavailable. Install dependencies from requirements.txt.")
         return None
@@ -605,13 +683,14 @@ def execute_alpaca_trade(action: str, symbol: str, price: float, sz: float) -> O
             if action.upper() in ["BUY", "EXIT_SHORT"]
             else OrderSide.SELL
         )
-        order = MarketOrderRequest(
+        order = LimitOrderRequest(
             symbol=symbol,
             qty=float(sz),
             side=side,
+            limit_price=round(float(price), 2),
             time_in_force=TimeInForce.GTC,
         )
-        print(f"[EXECUTE][ALPACA] {action.upper()} {sz} {symbol} at ~{price}")
+        print(f"[EXECUTE][ALPACA] {action.upper()} {sz} {symbol} LIMIT @{round(float(price), 2)}")
         result = client.submit_order(order_data=order)
         print(
             f"[SUCCESS][ALPACA] order_id={getattr(result, 'id', None)} status={getattr(result, 'status', None)}"
@@ -793,6 +872,13 @@ def main_loop(
     print(f"[CONFIG][RM] {json.dumps(RM, sort_keys=True)}")
     print(f"[CONFIG][LV] {json.dumps(LV, sort_keys=True)}")
     print(f"[CONFIG][LG] {json.dumps(LG, sort_keys=True)}")
+    print(
+        "[CONFIG][EFFECTIVE_SAFETY] "
+        f"position_size={TP.get('position_size')} | "
+        f"max_daily_loss={RM.get('max_daily_loss')} | "
+        f"max_consecutive_losses={RM.get('max_consecutive_losses')} | "
+        f"slippage_alert_usd={EXECUTION_SLIPPAGE_ALERT_USD}"
+    )
     print()
 
     # Log trade thresholds at startup
@@ -1050,6 +1136,12 @@ def main_loop(
 
             # --- EXECUTE THE ENTRY TRADE ---
             position_size_coin = float(TP.get("position_size", 0.01))
+            signal_time_raw = latest_bar.get("datetime")
+            signal_epoch = _safe_to_epoch(signal_time_raw)
+            if signal_epoch is None:
+                signal_epoch = time.time()
+            signal_price = float(latest_bar.get("close", current_price))
+            submit_started_epoch = time.time()
 
             entry_result = execute_trade(
                 action=setup["side"],
@@ -1057,6 +1149,7 @@ def main_loop(
                 price=trade_plan["entry_price"],
                 sz=position_size_coin,
             )
+            submit_completed_epoch = time.time()
             if entry_result is None:
                 print(
                     "[WARN] Entry setup was READY but broker execution failed. "
@@ -1065,6 +1158,84 @@ def main_loop(
                 )
                 time.sleep(POLL_SECONDS)
                 continue
+
+            exec_meta = _extract_execution_meta(entry_result)
+            submitted_epoch = (
+                _safe_to_epoch(exec_meta.get("submitted_at")) or submit_started_epoch
+            )
+            filled_epoch = _safe_to_epoch(exec_meta.get("filled_at"))
+            fill_price = _safe_to_float(exec_meta.get("filled_avg_price"))
+            if fill_price is None:
+                fill_price = _safe_to_float(exec_meta.get("limit_price"))
+            if fill_price is None:
+                fill_price = float(trade_plan["entry_price"])
+
+            signal_to_submit_ms = int((submitted_epoch - signal_epoch) * 1000)
+            request_rtt_ms = int((submit_completed_epoch - submit_started_epoch) * 1000)
+            signal_to_fill_ms = (
+                int((filled_epoch - signal_epoch) * 1000) if filled_epoch else None
+            )
+
+            direction = 1.0 if setup["side"] == "BUY" else -1.0
+            signal_to_fill_signed = (fill_price - signal_price) * direction
+            signal_to_fill_abs = abs(fill_price - signal_price)
+            plan_to_fill_signed = (fill_price - float(trade_plan["entry_price"])) * direction
+            plan_to_fill_bps = (
+                (plan_to_fill_signed / float(trade_plan["entry_price"])) * 10000
+                if float(trade_plan["entry_price"]) > 0
+                else 0.0
+            )
+
+            print(
+                "[SLIPPAGE] "
+                f"side={setup['side']} "
+                f"signal_time={signal_time_raw} "
+                f"signal_to_submit_ms={signal_to_submit_ms} "
+                f"submit_rtt_ms={request_rtt_ms} "
+                f"signal_to_fill_ms={signal_to_fill_ms if signal_to_fill_ms is not None else 'NA'} "
+                f"signal_px={signal_price:.2f} "
+                f"plan_px={float(trade_plan['entry_price']):.2f} "
+                f"fill_px={fill_price:.2f} "
+                f"signal_to_fill_usd={signal_to_fill_signed:.2f} "
+                f"signal_to_fill_abs_usd={signal_to_fill_abs:.2f} "
+                f"plan_to_fill_usd={plan_to_fill_signed:.2f} "
+                f"plan_to_fill_bps={plan_to_fill_bps:.2f} "
+                f"order_status={exec_meta.get('status', 'unknown')} "
+                f"order_id={exec_meta.get('id', 'na')}",
+                flush=True,
+            )
+            append_execution_telemetry(
+                {
+                    "logged_at_utc": utc_now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "broker": BROKER,
+                    "symbol": SYMBOL,
+                    "side": setup["side"],
+                    "signal_time_raw": signal_time_raw,
+                    "signal_epoch": signal_epoch,
+                    "submitted_epoch": submitted_epoch,
+                    "filled_epoch": filled_epoch,
+                    "signal_to_submit_ms": signal_to_submit_ms,
+                    "submit_rtt_ms": request_rtt_ms,
+                    "signal_to_fill_ms": signal_to_fill_ms,
+                    "signal_price": signal_price,
+                    "plan_price": float(trade_plan["entry_price"]),
+                    "fill_price": fill_price,
+                    "signal_to_fill_usd_signed": signal_to_fill_signed,
+                    "signal_to_fill_usd_abs": signal_to_fill_abs,
+                    "plan_to_fill_usd_signed": plan_to_fill_signed,
+                    "plan_to_fill_bps": plan_to_fill_bps,
+                    "size": position_size_coin,
+                    "order_id": exec_meta.get("id"),
+                    "order_status": exec_meta.get("status"),
+                }
+            )
+            if signal_to_fill_abs >= EXECUTION_SLIPPAGE_ALERT_USD:
+                print(
+                    "[SLIPPAGE][ALERT] "
+                    f"abs_spread_usd={signal_to_fill_abs:.2f} exceeds "
+                    f"threshold={EXECUTION_SLIPPAGE_ALERT_USD:.2f}",
+                    flush=True,
+                )
 
             timestamp = utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
             state["last_signal_epoch"] = time.time()
