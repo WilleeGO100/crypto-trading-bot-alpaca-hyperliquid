@@ -11,7 +11,7 @@ from hyperliquid.utils.constants import MAINNET_API_URL, TESTNET_API_URL
 
 # Your existing GEX logic
 from deribit_gamma import get_btc_gamma_snapshot
-from market_data_feeder import LIVE_FEED, atomic_write, get_market_frame
+from market_data_feeder import LIVE_FEED, atomic_write
 
 load_dotenv()
 
@@ -80,18 +80,43 @@ def seed_ohlcv_cache() -> None:
         return
 
     try:
-        historical = get_market_frame()
+        info = Info(base_url=BASE_URL, skip_ws=True)
+        end_ms = int(time.time() * 1000)
+        start_ms = end_ms - (6 * 60 * 60 * 1000)  # seed ~6h of 1m candles
+        candles = info.candles_snapshot(
+            name=SYMBOL,
+            interval="1m",
+            startTime=start_ms,
+            endTime=end_ms,
+        )
+        if not candles:
+            print("[WARN] Hyperliquid seed snapshot returned no candles; continuing without seed.")
+            return
+        historical = pd.DataFrame(candles)
+        if historical.empty:
+            print("[WARN] Hyperliquid seed snapshot was empty; continuing without seed.")
+            return
+        historical = pd.DataFrame(
+            {
+                "datetime": pd.to_datetime(historical.get("T"), unit="ms", errors="coerce", utc=True),
+                "open": pd.to_numeric(historical.get("o"), errors="coerce"),
+                "high": pd.to_numeric(historical.get("h"), errors="coerce"),
+                "low": pd.to_numeric(historical.get("l"), errors="coerce"),
+                "close": pd.to_numeric(historical.get("c"), errors="coerce"),
+                "volume": pd.to_numeric(historical.get("v"), errors="coerce").fillna(0.0),
+            }
+        ).dropna(subset=["datetime", "open", "high", "low", "close"])
     except Exception as exc:
-        print(f"[WARN] Unable to seed LiveFeed from history: {exc}")
+        print(f"[WARN] Unable to seed LiveFeed from Hyperliquid snapshot: {exc}")
         return
 
     if historical is None or historical.empty:
-        print("[WARN] Historical feed returned no candles; continuing without seed.")
+        print("[WARN] Hyperliquid snapshot returned no candles; continuing without seed.")
         return
 
-    _ohlcv_cache = historical.tail(150).reset_index(drop=True)
+    _ohlcv_cache = historical.sort_values("datetime").tail(150).reset_index(drop=True)
     atomic_write(_ohlcv_cache)
-    print(f"[INFO] Seeded LiveFeed with {len(_ohlcv_cache)} historical candles")
+    print(f"[INFO] Seeded LiveFeed from Hyperliquid snapshot ({len(_ohlcv_cache)} candles)")
 
 
 def on_candle_update(msg):
