@@ -252,6 +252,9 @@ def current_cooldown_seconds() -> float:
     return float(TP.get("cooldown_seconds", 20))
 
 AGGRESSIVE_GAMMA_OVERRIDE = os.getenv("ALLOW_GAMMA_OVERRIDE", "False").lower() == "true"
+AUTO_BYPASS_GAMMA_FOR_NON_BTC = (
+    os.getenv("AUTO_BYPASS_GAMMA_FOR_NON_BTC", "True").strip().lower() == "true"
+)
 GAMMA_PRICE_BUFFER = float(os.getenv("GAMMA_PRICE_BUFFER", "5"))
 IS_PAPER_MODE = (BROKER == "alpaca" and ALPACA_PAPER_TRADE) or (BROKER == "hyperliquid" and IS_TESTNET)
 BYPASS_FVG_REQUIREMENT = os.getenv("BYPASS_FVG_REQUIREMENT", "False").lower() == "true"
@@ -431,6 +434,25 @@ def _gamma_price_side(price: float, flip: Optional[float]) -> Optional[str]:
     return "at"
 
 
+def _symbol_base_asset(symbol: str) -> str:
+    raw = symbol.strip().upper().replace("-", "/")
+    if "/" in raw:
+        raw = raw.split("/", 1)[0]
+    if raw.endswith("USDC") and len(raw) > 4:
+        raw = raw[:-4]
+    if raw.endswith("USD") and len(raw) > 3:
+        raw = raw[:-3]
+    return raw
+
+
+def _gamma_gate_disabled() -> bool:
+    if AGGRESSIVE_GAMMA_OVERRIDE:
+        return True
+    if AUTO_BYPASS_GAMMA_FOR_NON_BTC and _symbol_base_asset(SYMBOL) != "BTC":
+        return True
+    return False
+
+
 def _gamma_entry_block_reason(side: str, price: float, gamma_context: Dict[str, Any]) -> Optional[str]:
     gamma_flip = gamma_context.get("gamma_flip")
     gamma_state = str(gamma_context.get("gamma_state", "UNKNOWN")).upper()
@@ -445,7 +467,7 @@ def _gamma_entry_block_reason(side: str, price: float, gamma_context: Dict[str, 
 
     blockers = []
 
-    if not AGGRESSIVE_GAMMA_OVERRIDE:
+    if not _gamma_gate_disabled():
         if IS_PAPER_MODE and not REQUIRE_GAMMA_IN_PAPER and not gamma_data_available:
             return None
         if gamma_flip is not None:
@@ -970,6 +992,8 @@ def main_loop(
         f"stop_loss_max={RM.get('stop_loss_max')} | "
         f"cooldown_seconds={current_cooldown_seconds()} | "
         f"aggressive_gamma_override={AGGRESSIVE_GAMMA_OVERRIDE} | "
+        f"auto_bypass_gamma_for_non_btc={AUTO_BYPASS_GAMMA_FOR_NON_BTC} | "
+        f"effective_gamma_gate={'DISABLED' if _gamma_gate_disabled() else 'ENABLED'} | "
         f"require_gamma_in_paper={REQUIRE_GAMMA_IN_PAPER}"
     )
     print()
@@ -1094,7 +1118,7 @@ def main_loop(
                     print(
                         f"[WAIT] {no_setup_reason} "
                         f"| bypass_fvg_requirement={BYPASS_FVG_REQUIREMENT} "
-                        f"| gamma_gate={'DISABLED' if AGGRESSIVE_GAMMA_OVERRIDE else 'ENABLED'} "
+                        f"| gamma_gate={'DISABLED' if _gamma_gate_disabled() else 'ENABLED'} "
                         f"| gamma={gamma_context.get('gamma_state')} "
                         f"| regime={gamma_context.get('market_regime')}",
                         flush=True,
@@ -1187,7 +1211,7 @@ def main_loop(
                 f"[DEBUG] side={setup['side']} conf={confidence:.2f} "
                 f"state={gamma_context['gamma_state']} regime={gamma_context['market_regime']} "
                 f"rr={(trade_plan['risk_reward'] if trade_plan else 0):.2f} "
-                f"gamma_gate={'DISABLED' if AGGRESSIVE_GAMMA_OVERRIDE else 'ENABLED'} "
+                f"gamma_gate={'DISABLED' if _gamma_gate_disabled() else 'ENABLED'} "
                 f"reason={decision.get('reason', '')}"
             )
 
