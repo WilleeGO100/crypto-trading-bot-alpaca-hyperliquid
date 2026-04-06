@@ -24,14 +24,14 @@ def main():
         api_url = constants.TESTNET_API_URL
 
     if not secret_key or not address:
-        print(f"❌ Error: Missing credentials for {env_mode.upper()} mode in the .env file.")
+        print(f"[ERROR] Error: Missing credentials for {env_mode.upper()} mode in the .env file.")
         return
 
     account = eth_account.Account.from_key(secret_key)
     exchange = Exchange(account, api_url, account_address=address)
 
     last_known_positions = {}
-    print(f"🛰️ Smyrna Station Manager ({env_mode.upper()}): ONLINE. Monitoring all coins...")
+    print(f"[MANAGER] Smyrna Station Manager ({env_mode.upper()}): ONLINE. Monitoring all coins...")
 
     while True:
         try:
@@ -46,7 +46,7 @@ def main():
 
                 # If size changed (Trap hit or position closed)
                 if size != last_known_positions.get(coin, 0.0):
-                    print(f"🔔 Activity in {coin}! New Size: {size} | Entry: {entry}")
+                    print(f"[EVENT] Activity in {coin}! New Size: {size} | Entry: {entry}")
 
                     # 1. Cancel old TPs for this coin
                     o_payload = {"type": "openOrders", "user": address}
@@ -60,12 +60,12 @@ def main():
                         is_buy = size < 0  # To close long, sell (False). To close short, buy (True).
                         tp_px = int(entry * 1.005) if size > 0 else int(entry * 0.995)
                         exchange.order(coin, is_buy, abs(size), tp_px, {"limit": {"tif": "Gtc"}})
-                        print(f"🎯 {coin} TP set at ${tp_px}")
+                        print(f"[TP] {coin} TP set at ${tp_px}")
 
                     last_known_positions[coin] = size
 
         except Exception as e:
-            print(f"⚠️ Manager Warning: {e}")
+            print(f"[WARN] Manager Warning: {e}")
 
         time.sleep(10)
 

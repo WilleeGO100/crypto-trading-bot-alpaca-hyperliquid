@@ -101,14 +101,14 @@ def main():
         api_url = constants.TESTNET_API_URL
 
     if not secret_key or not address:
-        print(f"❌ Error: Missing credentials for {env_mode.upper()} mode in the .env file.")
+        print(f"[ERROR] Error: Missing credentials for {env_mode.upper()} mode in the .env file.")
         return
 
     WATCHLIST = ['BTC', 'ETH', 'SOL', 'ARB', 'TIA']
     BASE_DOLLAR_SIZE = 15.0
     MAX_OPEN_TRADES = 3
 
-    print(f"--- 🤖 Smyrna Station: Fibonacci Scanner ({env_mode.upper()}) ---")
+    print(f"--- [BOT] Smyrna Station: Fibonacci Scanner ({env_mode.upper()}) ---")
 
     try:
         spot_meta = requests.post(url, json={"type": "spotMeta"}).json()
@@ -117,14 +117,14 @@ def main():
         active_pos = [p for p in ch_state.get('assetPositions', []) if float(p['position']['szi']) != 0]
 
         if len(active_pos) >= MAX_OPEN_TRADES:
-            print(f"🛑 Position Limit ({MAX_OPEN_TRADES}) Reached.")
+            print(f"[STOP] Position Limit ({MAX_OPEN_TRADES}) Reached.")
             return
     except Exception as e:
-        print(f"⚠️ Sync Error: {e}")
+        print(f"[WARN] Sync Error: {e}")
         return
 
     for coin in WATCHLIST:
-        print(f"\n🔍 Analyzing {coin}...")
+        print(f"\n[SCAN] Analyzing {coin}...")
         try:
             # A. Fetch Data
             now = int(time.time() * 1000)
@@ -154,19 +154,19 @@ def main():
             breakout_ok = _breakout_ok(df, trend_side) if trend_side in {"LONG", "SHORT"} else False
 
             if not (0.02 <= range_pct <= 0.045):
-                print(f"⏭️ {coin} Volatility ({range_pct * 100:.2f}%) out of zone.")
+                print(f"[SKIP] {coin} Volatility ({range_pct * 100:.2f}%) out of zone.")
                 continue
 
             if trend_side == "NEUTRAL":
-                print(f"⏭️ {coin} EMAs tangled.")
+                print(f"[SKIP] {coin} EMAs tangled.")
                 continue
 
             if not smooth_ok:
-                print(f"⏭️ {coin} Trend not smooth enough.")
+                print(f"[SKIP] {coin} Trend not smooth enough.")
                 continue
 
             if not breakout_ok:
-                print(f"⏭️ {coin} No continuation breakout yet.")
+                print(f"[SKIP] {coin} No continuation breakout yet.")
                 continue
 
             # --- D. TCL-STYLE ENTRY/EXIT & ASYMMETRICAL STACKING ---
@@ -177,7 +177,7 @@ def main():
             swing_high, swing_low = float(recent['high'].max()), float(recent['low'].min())
             span = swing_high - swing_low
             if span <= 0:
-                print(f"⏭️ {coin} Invalid swing range.")
+                print(f"[SKIP] {coin} Invalid swing range.")
                 continue
 
             # Entry is current market context; limits are pullback levels.
@@ -217,7 +217,7 @@ def main():
             avg_all = _weighted_avg(prices, weights)
             risk_per_unit = (avg_all - stop_px) if is_buy else (stop_px - avg_all)
             if risk_per_unit <= 0:
-                print(f"⏭️ {coin} Invalid stop distance.")
+                print(f"[SKIP] {coin} Invalid stop distance.")
                 continue
             total_qty = risk_usd / risk_per_unit
 
@@ -235,11 +235,11 @@ def main():
             tp_limit2 = _px_round(_tp_from_avg(trend_side, _weighted_avg(prices, qtys), target_profit_pct))
 
             print(
-                f"✅ {coin} {trend_side} | Risk: ${risk_usd:.2f} ({risk_pct*100:.2f}%) | "
+                f"[OK] {coin} {trend_side} | Risk: ${risk_usd:.2f} ({risk_pct*100:.2f}%) | "
                 f"Entry: ${entry_px} L1: ${d1_px} L2: ${d2_px} Stop: ${stop_px}"
             )
             print(
-                f"📐 Manage1={manage1} Manage2={manage2} | TP(entry)={tp_entry} "
+                f"[MATH] Manage1={manage1} Manage2={manage2} | TP(entry)={tp_entry} "
                 f"TP(limit1fill)={tp_limit1} TP(limit2fill)={tp_limit2}"
             )
 
@@ -263,7 +263,7 @@ def main():
                 stop_px,
                 {"stopMarket": {"triggerPx": stop_px, "reduceOnly": True}},
             )
-            print(f"🚀 {coin} TCL Grid Armed on {env_mode.upper()}.")
+            print(f"[START] {coin} TCL Grid Armed on {env_mode.upper()}.")
 
         except Exception:
             traceback.print_exc()

@@ -131,7 +131,7 @@ def fetch_btc_instruments() -> list[dict]:
         response.raise_for_status()
         return response.json().get("result", [])
     except Exception as e:
-        print(f"⚠️ Deribit instruments fetch error: {e}")
+        print(f"[WARN] Deribit instruments fetch error: {e}")
         return []
 
 
@@ -158,7 +158,7 @@ def get_btc_spot() -> Optional[float]:
         result = response.json().get("result", {})
         return float(result.get("last_price", 0.0))
     except Exception as e:
-        print(f"⚠️ Deribit BTC spot fetch error: {e}")
+        print(f"[WARN] Deribit BTC spot fetch error: {e}")
         return None
 
 
@@ -433,6 +433,6 @@ def get_btc_gamma_snapshot() -> Dict[str, Optional[float]]:
 
 if __name__ == "__main__":
     # Quick test
-    print("🔍 Fetching BTC gamma snapshot from Deribit...")
+    print("[SCAN] Fetching BTC gamma snapshot from Deribit...")
     snapshot = get_btc_gamma_snapshot()
-    print(f"✅ Snapshot: {snapshot}")
+    print(f"[OK] Snapshot: {snapshot}")

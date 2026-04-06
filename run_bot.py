@@ -104,7 +104,7 @@ def main():
     env_snapshot["GEX_SYMBOL"] = selected["coin"]
 
     print("=" * 60)
-    print("🚀 BOOTING HYPERLIQUID QUANT ENGINE")
+    print("[START] BOOTING HYPERLIQUID QUANT ENGINE")
     print("=" * 60)
     print(
         f"[INFO] coin={selected['coin']} trade_symbol={env_snapshot['TRADE_SYMBOL']} market_symbol={env_snapshot['MARKET_SYMBOL']}"
@@ -128,7 +128,7 @@ def main():
             bufsize=1,
             env=env_snapshot,
         )
-        print(f"✅ Feeder started (PID: {feeder_process.pid})")
+        print(f"[OK] Feeder started (PID: {feeder_process.pid})")
         print()
 
         # Start a background thread to print feeder output immediately
@@ -152,11 +152,11 @@ def main():
             bufsize=1,
             env=env_snapshot,
         )
-        print(f"✅ Engine started (PID: {engine_process.pid})")
+        print(f"[OK] Engine started (PID: {engine_process.pid})")
         print()
 
         print("=" * 60)
-        print("🟢 SYSTEM ONLINE. Press Ctrl+C to gracefully shutdown.")
+        print("[ONLINE] SYSTEM ONLINE. Press Ctrl+C to gracefully shutdown.")
         print("=" * 60)
         print()
 
@@ -173,17 +173,17 @@ def main():
         engine_process.wait()
 
     except KeyboardInterrupt:
-        print(f"\n\n{COLOR_RESET}⏹️  Shutting down safely...")
+        print(f"\n\n{COLOR_RESET}[STOPPING]  Shutting down safely...")
         if feeder_process:
             feeder_process.terminate()
-            print("✓ Feeder stopped")
+            print("[OK] Feeder stopped")
         if engine_process:
             engine_process.terminate()
-            print("✓ Engine stopped")
+            print("[OK] Engine stopped")
         sys.exit(0)
 
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\n[ERROR] Error: {e}")
         if feeder_process:
             feeder_process.terminate()
         if engine_process:

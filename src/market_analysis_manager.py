@@ -46,7 +46,7 @@ class MarketAnalysisManager:
         path = "data/HistoricalData.csv"
 
         if not os.path.exists(path):
-            logger.error(f"❌ Critical Error: {path} not found! Run your fetch script first.")
+            logger.error(f"[ERROR] Critical Error: {path} not found! Run your fetch script first.")
             return None
 
         try:
@@ -59,11 +59,11 @@ class MarketAnalysisManager:
             # Sort to ensure candles are in chronological order
             df = df.sort_index()
 
-            logger.info(f"✅ Successfully loaded {len(df)} candles from {path}")
+            logger.info(f"[OK] Successfully loaded {len(df)} candles from {path}")
             return df
 
         except Exception as e:
-            logger.error(f"❌ Failed to load market data: {e}")
+            logger.error(f"[ERROR] Failed to load market data: {e}")
             return None
 
     # --- PERSISTENCE & STATE METHODS ---

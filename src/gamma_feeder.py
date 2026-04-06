@@ -112,7 +112,7 @@ def get_gex_snapshot() -> Dict[str, Optional[float]]:
             "inside_walls": inside_walls,
         }
     except Exception as exc:
-        print(f"⚠️ GEX fetch error: {exc}")
+        print(f"[WARN] GEX fetch error: {exc}")
         return default
 
 
@@ -148,7 +148,7 @@ def get_market_frame() -> Optional[pd.DataFrame]:
         df = ticker.history(period="1d", interval="1m", auto_adjust=False)
 
         if df.empty:
-            print(f"⚠️ [{datetime.now().strftime('%H:%M:%S')}] yfinance returned empty data.")
+            print(f"[WARN] [{datetime.now().strftime('%H:%M:%S')}] yfinance returned empty data.")
             return None
 
         try:
@@ -201,7 +201,7 @@ def get_market_frame() -> Optional[pd.DataFrame]:
 
         return df[ordered_cols]
     except Exception as exc:
-        print(f"🚨 Feed build error: {exc}")
+        print(f"[ALERT] Feed build error: {exc}")
         return None
 
 
@@ -213,12 +213,12 @@ def atomic_write(df: pd.DataFrame) -> None:
 def ensure_live_feed_exists() -> None:
     if not LIVE_FEED.exists():
         atomic_write(build_placeholder())
-        print(f"📝 Created placeholder feed: {LIVE_FEED}")
+        print(f"[NOTE] Created placeholder feed: {LIVE_FEED}")
 
 
 def run() -> None:
-    print(f"--- 📡 Feeder Online [{SYMBOL}] ---")
-    print(f"📁 Output: {LIVE_FEED}")
+    print(f"--- [FEED] Feeder Online [{SYMBOL}] ---")
+    print(f"[FILE] Output: {LIVE_FEED}")
     ensure_live_feed_exists()
 
     while True:
@@ -228,11 +228,11 @@ def run() -> None:
             current_close = float(df["close"].iloc[-1])
             gamma_state = str(df["gamma_state"].iloc[-1])
             print(
-                f"✅ [{datetime.now().strftime('%H:%M:%S')}] "
+                f"[OK] [{datetime.now().strftime('%H:%M:%S')}] "
                 f"LiveFeed Updated | {SYMBOL} @ {current_close:.2f} | {gamma_state}"
             )
         else:
-            print(f"⚠️ [{datetime.now().strftime('%H:%M:%S')}] feed update skipped")
+            print(f"[WARN] [{datetime.now().strftime('%H:%M:%S')}] feed update skipped")
         time.sleep(POLL_SECONDS)
 
 

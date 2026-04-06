@@ -23,9 +23,9 @@ def main():
     print("----------------------")
 
     if float(balance) == 0.0:
-        print("❌ Still $0. Go to the 'Drip' page and hit 'Claim' again.")
+        print("[ERROR] Still $0. Go to the 'Drip' page and hit 'Claim' again.")
     else:
-        print("✅ SUCCESS! The $1,000 is live. Ready to trade.")
+        print("[OK] SUCCESS! The $1,000 is live. Ready to trade.")
 
 
 if __name__ == "__main__":

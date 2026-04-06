@@ -10,12 +10,12 @@ from hyperliquid.utils import constants
 load_dotenv()
 secret_key = os.getenv("HYPERLIQUID_SECRET_KEY")
 if not secret_key:
-    raise ValueError("❌ Missing HYPERLIQUID_SECRET_KEY in .env file")
+    raise ValueError("[ERROR] Missing HYPERLIQUID_SECRET_KEY in .env file")
 
 account = eth_account.Account.from_key(secret_key)
 wallet_address = account.address
 
-print(f"🔌 Connecting Watchdog to Hyperliquid Mainnet for {wallet_address}...")
+print(f"[CONNECT] Connecting Watchdog to Hyperliquid Mainnet for {wallet_address}...")
 
 # These are the variables PyCharm was looking for!
 info = Info(constants.MAINNET_API_URL, skip_ws=False)
@@ -43,7 +43,7 @@ def compress_take_profit(symbol: str, position_data: dict, manage_value: float, 
     size = float(position_data['szi'])
     side = "LONG" if size > 0 else "SHORT"
 
-    print(f"\n⚡ LIMIT FILL DETECTED ON {symbol}!")
+    print(f"\n[FILL] LIMIT FILL DETECTED ON {symbol}!")
     print(f"New Avg Entry: {avg_entry} | Total Size: {abs(size)}")
 
     # 1. Cancel the old Take Profit(s)
@@ -55,10 +55,10 @@ def compress_take_profit(symbol: str, position_data: dict, manage_value: float, 
             if order["coin"] == symbol and order.get("isTrigger", False) == False
         ]
         if tp_orders_to_cancel:
-            print(f"🗑️ Canceling {len(tp_orders_to_cancel)} old Take Profit orders...")
+            print(f"[CANCEL] Canceling {len(tp_orders_to_cancel)} old Take Profit orders...")
             exchange.cancel_orders(tp_orders_to_cancel)
     except Exception as e:
-        print(f"⚠️ Error canceling old TP: {e}")
+        print(f"[WARN] Error canceling old TP: {e}")
 
     # 2. THE SPREADSHEET MATH (A11 +/- ((D7/H11)*A11))
     new_tp_pct = base_target_pct / manage_value
@@ -74,7 +74,7 @@ def compress_take_profit(symbol: str, position_data: dict, manage_value: float, 
     # 3. Place the New Compressed Take Profit
     is_buy = True if side == "SHORT" else False
     try:
-        print(f"🎯 Placing NEW Compressed Take Profit at {new_tp_price} (Target: {round(new_tp_pct * 100, 2)}%)...")
+        print(f"[TP] Placing NEW Compressed Take Profit at {new_tp_price} (Target: {round(new_tp_pct * 100, 2)}%)...")
         exchange.custom_order(
             symbol,
             is_buy,
@@ -83,7 +83,7 @@ def compress_take_profit(symbol: str, position_data: dict, manage_value: float, 
             {"limit": {"tif": "Gtc"}, "reduceOnly": True}
         )
     except Exception as e:
-        print(f"❌ Error placing new TP: {e}")
+        print(f"[ERROR] Error placing new TP: {e}")
 
 
 # --- 4. WEBSOCKET LISTENER ---
@@ -96,7 +96,7 @@ def user_events_callback(ws_data):
         active_grids = get_active_grids()  # Check the shared brain!
 
         if symbol in active_grids:
-            print(f"🔔 WebSocket Alert: Order filled for {symbol} at {fill.get('px')}")
+            print(f"[EVENT] WebSocket Alert: Order filled for {symbol} at {fill.get('px')}")
 
             try:
                 user_state = info.user_state(wallet_address)
@@ -109,14 +109,14 @@ def user_events_callback(ws_data):
                         manage_val = active_grids[symbol].get("manage1", 4)
                         compress_take_profit(symbol, pos_data, manage_val)
             except Exception as e:
-                print(f"⚠️ Error fetching user state: {e}")
+                print(f"[WARN] Error fetching user state: {e}")
 
 
 # Subscribe to the live feed
-print("📡 Subscribing to Hyperliquid WebSocket feed...")
+print("[FEED] Subscribing to Hyperliquid WebSocket feed...")
 info.subscribe({"type": "userEvents", "user": wallet_address}, user_events_callback)
 
 # Keep the script running forever
-print("🛡️ Watchdog is online and listening. Press Ctrl+C to exit.")
+print("[GUARD] Watchdog is online and listening. Press Ctrl+C to exit.")
 while True:
     time.sleep(60)

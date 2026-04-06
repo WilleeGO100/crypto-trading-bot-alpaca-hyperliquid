@@ -26,10 +26,10 @@ def execute_trade_plan(parsed_signal):
     # Matches the 10X setting from your spreadsheet strategy
     leverage = 10
     try:
-        print(f"🛡️ Setting {symbol} to CROSS Margin at {leverage}x Leverage...")
+        print(f"[GUARD] Setting {symbol} to CROSS Margin at {leverage}x Leverage...")
         exchange.update_leverage(leverage, symbol, is_cross=True)
     except Exception as e:
-        print(f"⚠️ Margin/Leverage already set or note: {e}")
+        print(f"[WARN] Margin/Leverage already set or note: {e}")
 
     # --- 3. CYBORG SIZING LOGIC (1-3-5-8-10-15 Multipliers) ---
     # Uses $420 as the safe floor to satisfy the $10 minimum order rule
@@ -50,25 +50,25 @@ def execute_trade_plan(parsed_signal):
     # Base unit value (1 unit) converted to coin quantity
     raw_base_qty = notional_usd / entry_price / total_units
 
-    print(f"\n--- 🤖 CYBORG MATRIX PLANNER: {symbol} {side} ---")
+    print(f"\n--- [BOT] CYBORG MATRIX PLANNER: {symbol} {side} ---")
     print(f"Total Units: {total_units} | Base Qty: {raw_base_qty}")
 
     # --- 4. EXECUTE INITIAL ENTRY (1x Unit) ---
     q0 = format_qty(raw_base_qty * multipliers[0])
     try:
-        print(f"🚀 Placing Base Entry {side} at {entry_price} (Size: {q0})...")
+        print(f"[START] Placing Base Entry {side} at {entry_price} (Size: {q0})...")
         exchange.custom_order(symbol, is_buy, q0, entry_price, {"limit": {"tif": "Gtc"}})
     except Exception as e:
-        print(f"❌ Base Entry Error: {e}")
+        print(f"[ERROR] Base Entry Error: {e}")
 
     # --- 5. EXECUTE SCALED LIMITS (3x, 5x, 8x, etc.) ---
     for i, limit_price in enumerate(active_limits, start=1):
         size = format_qty(raw_base_qty * multipliers[i])
         try:
-            print(f"🪜 Placing Limit {i} at {limit_price} (Size: {size})...")
+            print(f"[LADDER] Placing Limit {i} at {limit_price} (Size: {size})...")
             exchange.custom_order(symbol, is_buy, size, limit_price, {"limit": {"tif": "Gtc"}})
         except Exception as e:
-            print(f"❌ Limit {i} Error: {e}")
+            print(f"[ERROR] Limit {i} Error: {e}")
 
     # --- 6. PLACE INITIAL TAKE PROFIT & STOP LOSS ---
     tp = parsed_signal.get("take_profit")
@@ -76,18 +76,18 @@ def execute_trade_plan(parsed_signal):
 
     if tp:
         try:
-            print(f"🎯 Placing Initial Take Profit at {tp}...")
+            print(f"[TP] Placing Initial Take Profit at {tp}...")
             exchange.custom_order(symbol, not is_buy, q0, tp, {"limit": {"tif": "Gtc"}, "reduceOnly": True})
         except Exception as e:
-            print(f"❌ TP Error: {e}")
+            print(f"[ERROR] TP Error: {e}")
 
     if sl:
         try:
-            print(f"🛑 Placing Stop Loss at {sl}...")
+            print(f"[STOP] Placing Stop Loss at {sl}...")
             # SL is a trigger order (stopMarket)
             exchange.order(symbol, not is_buy, q0, sl, {"stopMarket": {"triggerPx": sl, "reduceOnly": True}})
         except Exception as e:
-            print(f"❌ SL Error: {e}")
+            print(f"[ERROR] SL Error: {e}")
 
     # --- 7. WRITE TO SHARED MEMORY FOR 24/7 WATCHDOG ---
     # This tells the position_manager.py how to handle TP compression
@@ -114,5 +114,5 @@ def execute_trade_plan(parsed_signal):
     with open(memory_file, "w") as f:
         json.dump(current_memory, f, indent=4)
 
-    print(f"💾 {symbol} logged to Shared Memory. 24/7 Watchdog is now tracking.")
+    print(f"[SAVE] {symbol} logged to Shared Memory. 24/7 Watchdog is now tracking.")
     return True

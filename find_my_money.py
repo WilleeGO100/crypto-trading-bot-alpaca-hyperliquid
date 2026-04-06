@@ -24,11 +24,11 @@ def main():
     print("----------------------")
 
     if float(real_bal) > 0:
-        print("✅ Found it! Your money is on the REAL exchange.")
+        print("[OK] Found it! Your money is on the REAL exchange.")
     elif float(fake_bal) > 0:
-        print("✅ Found it! Your money is on the TEST exchange.")
+        print("[OK] Found it! Your money is on the TEST exchange.")
     else:
-        print("❌ Both are $0. It might still be in your 'Spot' wallet (not yet in the Trading account).")
+        print("[ERROR] Both are $0. It might still be in your 'Spot' wallet (not yet in the Trading account).")
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ def main():
     # Initialize Info on Mainnet
     info = Info(constants.MAINNET_API_URL, skip_ws=False)
 
-    print("--- 📡 LIVE MARKET FEED: BTC-USD ---")
+    print("--- [FEED] LIVE MARKET FEED: BTC-USD ---")
     print("Keep this window active. Press Ctrl+C to stop.")
 
     def print_price(data):
@@ -18,7 +18,7 @@ def main():
             btc_price = mids.get('BTC')
             if btc_price:
                 # \r overwrites the same line so your terminal stays clean
-                sys.stdout.write(f"\r💰 BTC Current Price: ${btc_price}    ")
+                sys.stdout.write(f"\r[PRICE] BTC Current Price: ${btc_price}    ")
                 sys.stdout.flush()
 
     try:
@@ -30,11 +30,11 @@ def main():
             time.sleep(1)
 
     except KeyboardInterrupt:
-        print("\n\n✅ Shutdown Signal Received.")
+        print("\n\n[OK] Shutdown Signal Received.")
         print("Closing connection and exiting...")
         # The script will now naturally exit here
     except Exception as e:
-        print(f"\n❌ Unexpected Error: {e}")
+        print(f"\n[ERROR] Unexpected Error: {e}")
 
 
 if __name__ == "__main__":

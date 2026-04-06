@@ -11,7 +11,7 @@ def main():
     # We are using the TESTNET URL to practice first
     url = "https://api.hyperliquid-testnet.xyz/info"
 
-    print("--- 🤖 DCA Bot: Phase 1 (Scanning Market) ---")
+    print("--- [BOT] DCA Bot: Phase 1 (Scanning Market) ---")
 
     # 1. Get Live BTC Price
     res = requests.post(url, json={"type": "l2Book", "coin": "BTC"})
@@ -41,7 +41,7 @@ def main():
     print(f"--- Balance Report ---")
     print(f"Perp Value: ${perp_val}")
     print(f"Spot Value: ${spot_val}")
-    print(f"💰 Trading Power: ${available_funds}")
+    print(f"[PRICE] Trading Power: ${available_funds}")
     print("-----------------------")
 
 

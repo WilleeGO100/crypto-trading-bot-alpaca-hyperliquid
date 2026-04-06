@@ -97,6 +97,6 @@ class HyperliquidWsManager:
                         # Extract the new order ID so OCO still works
                         statuses = new_tp["response"]["data"]["statuses"]
                         self.tp_id = statuses[0].get("resting", {}).get("oid")
-                        print(f"✅ TP Compressed successfully. New TP ID: {self.tp_id}")
+                        print(f"[OK] TP Compressed successfully. New TP ID: {self.tp_id}")
                 except Exception as e:
-                    print(f"❌ Failed to compress TP: {e}")
+                    print(f"[ERROR] Failed to compress TP: {e}")

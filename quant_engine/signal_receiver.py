@@ -44,7 +44,7 @@ HTML_CONTENT = """
 </head>
 <body>
     <div class="container">
-        <h2>🎯 SNIPER DASHBOARD</h2>
+        <h2>[TP] SNIPER DASHBOARD</h2>
 
         <div class="flex">
             <div>
@@ -73,7 +73,7 @@ HTML_CONTENT = """
             <div><label>Stop Loss</label><input type="number" step="any" id="sl"></div>
         </div>
 
-        <button onclick="fireSquad()">🚀 FIRE SQUAD</button>
+        <button onclick="fireSquad()">[START] FIRE SQUAD</button>
         <p id="status" style="text-align:center; margin-top:20px; font-size: 16px; font-weight: bold;"></p>
     </div>
 
@@ -133,16 +133,16 @@ HTML_CONTENT = """
                 const data = await res.json();
                 if(data.ok) {
                     status.style.color = "#22c55e";
-                    status.innerText = "✅ Trade Executed on Hyperliquid!";
+                    status.innerText = "[OK] Trade Executed on Hyperliquid!";
                 } else {
                     status.style.color = "#ef4444";
-                    status.innerText = "❌ Error: Check terminal logs";
+                    status.innerText = "[ERROR] Error: Check terminal logs";
                 }
             } catch(e) {
                 status.style.color = "#ef4444";
-                status.innerText = "❌ Connection Failed";
+                status.innerText = "[ERROR] Connection Failed";
             }
-            setTimeout(() => { btn.disabled = false; btn.innerText = "🚀 FIRE SQUAD"; }, 2000);
+            setTimeout(() => { btn.disabled = false; btn.innerText = "[START] FIRE SQUAD"; }, 2000);
         }
     </script>
 </body>
@@ -164,10 +164,10 @@ async def signal_endpoint(sig: Signal, request: Request):
     try:
         result = plan_and_execute_hyperliquid_trade(payload)
     except Exception as e:
-        print(f"❌ Execution Error: {e}")
+        print(f"[ERROR] Execution Error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
-    print("\n=== 🚀 HYPERLIQUID SIGNAL PROCESSED ===")
+    print("\n=== [START] HYPERLIQUID SIGNAL PROCESSED ===")
     print(f"Source: {payload['source']}")
     print(f"Payload: {payload['symbol']} {payload['side']} @ {payload['entry']}")
     print(f"Result: {result}")
