@@ -1,5 +1,6 @@
 import os
 import time
+import argparse
 from datetime import datetime
 from typing import Optional
 import pandas as pd
@@ -203,7 +204,11 @@ def on_candle_update(msg):
     )
 
 
-def run():
+def run(symbol_override: Optional[str] = None):
+    global SYMBOL
+    if symbol_override and str(symbol_override).strip():
+        SYMBOL = str(symbol_override).strip().upper()
+
     env_name = "TESTNET (Paper)" if IS_TESTNET else "MAINNET (Live)"
     print(
         f"--- [FEEDER] Hyperliquid WebSocket Online | {env_name} [{SYMBOL}] "
@@ -246,4 +251,7 @@ def run():
                 pass
         time.sleep(10)
 if __name__ == "__main__":
-    run()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--symbol", default="", help="Symbol override (e.g. BTC, ETH, HYPE)")
+    args = parser.parse_args()
+    run(symbol_override=args.symbol)

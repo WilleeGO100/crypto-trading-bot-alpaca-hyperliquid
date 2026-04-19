@@ -130,7 +130,7 @@ def main():
         # 1. Start the Data Feeder
         print("[1/2] Starting Hyperliquid WebSocket Feeder...")
         feeder_process = subprocess.Popen(
-            [python_exe, "hl_feeder.py"],
+            [python_exe, "hl_feeder.py", "--symbol", selected["trade_symbol"]],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

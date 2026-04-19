@@ -16,9 +16,11 @@ import pandas as pd
 from dotenv import load_dotenv
 from hyperliquid.info import Info
 from hyperliquid.utils.constants import MAINNET_API_URL, TESTNET_API_URL
+from env_profiles import load_env_profile
 
 BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env")
+LOADED_ENV_PROFILE = load_env_profile("engine")
+load_dotenv(BASE_DIR / ".env", override=False)
 
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
