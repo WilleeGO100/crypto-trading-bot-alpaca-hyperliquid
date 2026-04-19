@@ -58,13 +58,27 @@ RISK_RULES_PATH = CONFIG_DIR / "risk_rules.json"
 BROKER = os.getenv("BROKER", "alpaca").strip().lower()
 
 # --- Broker Environment Setup ---
-IS_TESTNET = os.getenv("USE_TESTNET", "True").lower() == "true"
+
+def _resolve_hl_mode() -> str:
+    raw_mode = os.getenv("HL_ENVIRONMENT", "").strip().lower()
+    if raw_mode in {"paper", "testnet"}:
+        return "paper"
+    if raw_mode in {"live", "mainnet"}:
+        return "live"
+    return "paper" if os.getenv("USE_TESTNET", "True").lower() == "true" else "live"
+
+
+HL_ENV_MODE = _resolve_hl_mode()
+IS_TESTNET = HL_ENV_MODE == "paper"
 BASE_URL = TESTNET_API_URL if IS_TESTNET else MAINNET_API_URL
 HL_SECRET_KEY = (
     os.getenv("HL_TESTNET_SECRET_KEY", "").strip()
     if IS_TESTNET
     else os.getenv("HL_SECRET_KEY", "").strip()
 )
+HL_MARKET_TYPE = os.getenv("HL_MARKET_TYPE", "perp").strip().lower()
+if HL_MARKET_TYPE not in {"perp", "spot"}:
+    HL_MARKET_TYPE = "perp"
 
 ALPACA_API_KEY = (
     os.getenv("ALPACA_API_KEY", "").strip()
@@ -108,7 +122,17 @@ def _normalize_alpaca_symbol(symbol: str) -> str:
 def _normalize_hyperliquid_symbol(symbol: str) -> str:
     raw = symbol.strip().upper()
     if not raw:
-        return "BTC"
+        return "BTC/USDC" if HL_MARKET_TYPE == "spot" else "BTC"
+    if HL_MARKET_TYPE == "spot":
+        if "-" in raw and "/" not in raw:
+            raw = raw.replace("-", "/")
+        if "/" in raw:
+            return raw
+        if raw.endswith("USDC") and len(raw) > 4:
+            return f"{raw[:-4]}/USDC"
+        if raw.endswith("USD") and len(raw) > 3:
+            return f"{raw[:-3]}/USDC"
+        return f"{raw}/USDC"
     if "/" in raw:
         raw = raw.split("/", 1)[0]
     if "-" in raw:
@@ -132,9 +156,9 @@ SYMBOL = os.getenv("TRADE_SYMBOL", "BTC/USD")
 
 if BROKER == "hyperliquid":
     if IS_TESTNET:
-        print("[TESTNET] ENGINE BOOTING ON HYPERLIQUID PAPER MODE")
+        print(f"[TESTNET] ENGINE BOOTING ON HYPERLIQUID PAPER MODE ({HL_MARKET_TYPE.upper()})")
     else:
-        print("[MAINNET] ENGINE BOOTING ON HYPERLIQUID LIVE MODE")
+        print(f"[MAINNET] ENGINE BOOTING ON HYPERLIQUID LIVE MODE ({HL_MARKET_TYPE.upper()})")
 elif BROKER == "alpaca":
     env_name = "PAPER" if ALPACA_PAPER_TRADE else "LIVE"
     print(f"[ALPACA] ENGINE BOOTING ON {env_name} MODE")
@@ -258,6 +282,10 @@ AUTO_BYPASS_GAMMA_FOR_NON_BTC = (
 GAMMA_PRICE_BUFFER = float(os.getenv("GAMMA_PRICE_BUFFER", "5"))
 IS_PAPER_MODE = (BROKER == "alpaca" and ALPACA_PAPER_TRADE) or (BROKER == "hyperliquid" and IS_TESTNET)
 BYPASS_FVG_REQUIREMENT = os.getenv("BYPASS_FVG_REQUIREMENT", "False").lower() == "true"
+ADAPTIVE_FVG_FALLBACK_ENABLED = (
+    os.getenv("ADAPTIVE_FVG_FALLBACK_ENABLED", "True").strip().lower() == "true"
+)
+FVG_FALLBACK_IDLE_MINUTES = float(os.getenv("FVG_FALLBACK_IDLE_MINUTES", "15"))
 
 
 def utc_now() -> datetime:
@@ -453,6 +481,19 @@ def _gamma_gate_disabled() -> bool:
     return False
 
 
+def _has_complete_gamma_data(gamma_context: Dict[str, Any]) -> bool:
+    return gamma_context.get("gamma_flip") is not None and str(
+        gamma_context.get("gamma_state", "UNKNOWN")
+    ).upper() not in {"", "UNKNOWN"}
+
+
+def _gamma_context_matches_symbol(gamma_context: Dict[str, Any]) -> bool:
+    # Gamma source is BTC-specific today; avoid using it for non-BTC trading decisions.
+    if _symbol_base_asset(SYMBOL) != "BTC":
+        return False
+    return gamma_context.get("spot_price") is not None
+
+
 def _gamma_entry_block_reason(side: str, price: float, gamma_context: Dict[str, Any]) -> Optional[str]:
     gamma_flip = gamma_context.get("gamma_flip")
     gamma_state = str(gamma_context.get("gamma_state", "UNKNOWN")).upper()
@@ -468,14 +509,20 @@ def _gamma_entry_block_reason(side: str, price: float, gamma_context: Dict[str, 
     blockers = []
 
     if not _gamma_gate_disabled():
+        if not _gamma_context_matches_symbol(gamma_context):
+            if IS_PAPER_MODE and not REQUIRE_GAMMA_IN_PAPER:
+                return None
+            return "gamma context unavailable for symbol"
         if IS_PAPER_MODE and not REQUIRE_GAMMA_IN_PAPER and not gamma_data_available:
             return None
+        if not IS_PAPER_MODE and not gamma_data_available:
+            return "gamma data unavailable in live mode"
         if gamma_flip is not None:
             if side == "BUY" and price < gamma_flip - GAMMA_PRICE_BUFFER:
                 blockers.append("price below gamma flip")
             elif side == "SELL" and price > gamma_flip + GAMMA_PRICE_BUFFER:
                 blockers.append("price above gamma flip")
-        else:
+        elif REQUIRE_GAMMA_IN_PAPER:
             blockers.append("gamma flip unknown")
 
         if side == "BUY":
@@ -497,6 +544,13 @@ def _gamma_entry_block_reason(side: str, price: float, gamma_context: Dict[str, 
 def _gamma_exit_trigger(
     side: str, price: float, gamma_context: Dict[str, Any]
 ) -> Tuple[Optional[str], Optional[float]]:
+    if _gamma_gate_disabled():
+        return None, None
+    if not _gamma_context_matches_symbol(gamma_context):
+        return None, None
+    if not _has_complete_gamma_data(gamma_context):
+        return None, None
+
     gamma_flip = gamma_context.get("gamma_flip")
     gamma_state = str(gamma_context.get("gamma_state", "UNKNOWN")).upper()
     call_wall = gamma_context.get("major_call_wall")
@@ -706,10 +760,13 @@ def execute_hl_trade(action: str, coin: str, price: float, sz: float) -> Optiona
             f"[EXECUTE][HYPERLIQUID] {action.upper()} {sz} {coin} at ~{price}"
         )
 
+        if HL_MARKET_TYPE == "spot" and HL_LEVERAGE_ENABLED and "EXIT" not in action.upper():
+            print("[WARN] Spot mode ignores leverage settings.", flush=True)
+
         if "EXIT" in action.upper():
             result = exchange.market_close(coin=coin, sz=sz, px=price)
         else:
-            if HL_LEVERAGE_ENABLED:
+            if HL_LEVERAGE_ENABLED and HL_MARKET_TYPE == "perp":
                 leverage = _get_hl_target_leverage(coin)
                 is_cross = HL_MARGIN_MODE != "isolated"
                 try:
@@ -832,12 +889,21 @@ def maybe_exit_open_position(
     target_price = float(position["target_price"])
     entry_price = float(position["entry_price"])
     entry_epoch = float(position.get("entry_epoch", 0.0) or 0.0)
+    entry_bar_epoch = _safe_to_epoch(position.get("entry_bar_time"))
+    current_bar_epoch = _safe_to_epoch(last.get("datetime"))
 
     # Retrieve the exact size we entered with so we can close it fully
     sz = float(position.get("size", TP.get("position_size", 0.01)))
 
     exit_reason = None
     exit_price = None
+
+    if (
+        entry_bar_epoch is not None
+        and current_bar_epoch is not None
+        and current_bar_epoch <= entry_bar_epoch
+    ):
+        return None
 
     gamma_reason, gamma_price = _gamma_exit_trigger(side, close, gamma_context)
     if gamma_reason:
@@ -956,6 +1022,7 @@ def main_loop(
         f"broker={BROKER} | bot_profile={BOT_PROFILE or 'none'} | symbol={SYMBOL} | "
         f"alpaca_paper_trade={ALPACA_PAPER_TRADE} | "
         f"use_testnet={IS_TESTNET} | poll_seconds={POLL_SECONDS} | "
+        f"hl_mode={HL_ENV_MODE} | hl_market_type={HL_MARKET_TYPE} | "
         f"alpaca_auth_backoff_seconds={ALPACA_AUTH_BACKOFF_SECONDS} | "
         f"position_max_hold_minutes={POSITION_MAX_HOLD_MINUTES} | "
         f"bypass_fvg_requirement={BYPASS_FVG_REQUIREMENT}"
@@ -994,7 +1061,9 @@ def main_loop(
         f"aggressive_gamma_override={AGGRESSIVE_GAMMA_OVERRIDE} | "
         f"auto_bypass_gamma_for_non_btc={AUTO_BYPASS_GAMMA_FOR_NON_BTC} | "
         f"effective_gamma_gate={'DISABLED' if _gamma_gate_disabled() else 'ENABLED'} | "
-        f"require_gamma_in_paper={REQUIRE_GAMMA_IN_PAPER}"
+        f"require_gamma_in_paper={REQUIRE_GAMMA_IN_PAPER} | "
+        f"adaptive_fvg_fallback_enabled={ADAPTIVE_FVG_FALLBACK_ENABLED} | "
+        f"fvg_fallback_idle_minutes={FVG_FALLBACK_IDLE_MINUTES}"
     )
     print()
 
@@ -1017,6 +1086,26 @@ def main_loop(
     last_no_setup_signature = ""
     last_status_print = time.time()
     STATUS_THROTTLE = 120
+    no_setup_since_epoch: Optional[float] = None
+    adaptive_fallback_active = False
+    snapshot_cache = {"sig": "", "epoch": 0.0}
+    snapshot_min_interval = float(
+        os.getenv("ANALYSIS_SAVE_MIN_INTERVAL_SECONDS", "10")
+    )
+
+    def maybe_save_snapshot(snapshot: Dict[str, Any]) -> None:
+        try:
+            now_epoch = time.time()
+            signature = json.dumps(snapshot, sort_keys=True, default=str)
+            if (
+                signature != snapshot_cache["sig"]
+                or now_epoch - float(snapshot_cache["epoch"]) >= snapshot_min_interval
+            ):
+                analysis_manager.save_analysis(snapshot)
+                snapshot_cache["sig"] = signature
+                snapshot_cache["epoch"] = now_epoch
+        except Exception as exc:
+            print(f"[!] Failed to save analysis: {exc}", flush=True)
 
     while True:
         try:
@@ -1074,10 +1163,7 @@ def main_loop(
                     decision={"status": "WAIT", "reason": block_reason},
                     engine_state=state,
                 )
-                try:
-                    analysis_manager.save_analysis(snapshot)
-                except Exception as e:
-                    print(f"[!] Failed to save analysis: {e}", flush=True)
+                maybe_save_snapshot(snapshot)
                 time.sleep(POLL_SECONDS)
                 continue
 
@@ -1085,15 +1171,43 @@ def main_loop(
             setup: Optional[Dict[str, Any]] = None
             if setup_obj:
                 setup = setup_obj.to_dict()
-            elif BYPASS_FVG_REQUIREMENT:
-                setup = build_bypass_setup(df.tail(150))
+                no_setup_since_epoch = None
+                adaptive_fallback_active = False
+            else:
+                now_epoch = time.time()
+                fallback_allowed = BYPASS_FVG_REQUIREMENT
+                if not fallback_allowed and ADAPTIVE_FVG_FALLBACK_ENABLED:
+                    if no_setup_since_epoch is None:
+                        no_setup_since_epoch = now_epoch
+                    elapsed_seconds = now_epoch - no_setup_since_epoch
+                    fallback_allowed = elapsed_seconds >= max(
+                        0.0, FVG_FALLBACK_IDLE_MINUTES * 60.0
+                    )
+                    adaptive_fallback_active = fallback_allowed
+                elif fallback_allowed:
+                    adaptive_fallback_active = True
+
+                if fallback_allowed:
+                    setup = build_bypass_setup(df.tail(150))
 
             if not setup:
-                no_setup_reason = (
-                    "no valid FVG retest or fallback setup"
-                    if BYPASS_FVG_REQUIREMENT
-                    else "no valid FVG retest"
-                )
+                if BYPASS_FVG_REQUIREMENT:
+                    no_setup_reason = "no valid FVG retest or fallback setup"
+                elif ADAPTIVE_FVG_FALLBACK_ENABLED:
+                    if adaptive_fallback_active:
+                        no_setup_reason = "adaptive fallback active but no fallback setup"
+                    else:
+                        started = no_setup_since_epoch or time.time()
+                        elapsed = max(0.0, time.time() - started)
+                        remaining = max(
+                            0.0, (FVG_FALLBACK_IDLE_MINUTES * 60.0) - elapsed
+                        )
+                        no_setup_reason = (
+                            "no valid FVG retest "
+                            f"(adaptive fallback in {remaining/60.0:.1f}m)"
+                        )
+                else:
+                    no_setup_reason = "no valid FVG retest"
                 snapshot = make_market_snapshot(
                     analysis_manager=analysis_manager,
                     latest_bar=latest_bar,
@@ -1103,10 +1217,7 @@ def main_loop(
                     decision={"status": "WAIT", "reason": no_setup_reason},
                     engine_state=state,
                 )
-                try:
-                    analysis_manager.save_analysis(snapshot)
-                except Exception as e:
-                    print(f"[!] Failed to save analysis: {e}", flush=True)
+                maybe_save_snapshot(snapshot)
                 no_setup_sig = "|".join(
                     (
                         str(latest_bar.get("datetime")),
@@ -1118,6 +1229,7 @@ def main_loop(
                     print(
                         f"[WAIT] {no_setup_reason} "
                         f"| bypass_fvg_requirement={BYPASS_FVG_REQUIREMENT} "
+                        f"| adaptive_fallback_active={adaptive_fallback_active} "
                         f"| gamma_gate={'DISABLED' if _gamma_gate_disabled() else 'ENABLED'} "
                         f"| gamma={gamma_context.get('gamma_state')} "
                         f"| regime={gamma_context.get('market_regime')}",
@@ -1205,7 +1317,7 @@ def main_loop(
                 decision=decision,
                 engine_state=state,
             )
-            analysis_manager.save_analysis(snapshot)
+            maybe_save_snapshot(snapshot)
 
             base_log = (
                 f"[DEBUG] side={setup['side']} conf={confidence:.2f} "
@@ -1262,6 +1374,15 @@ def main_loop(
                 continue
 
             exec_meta = _extract_execution_meta(entry_result)
+            order_status = str(exec_meta.get("status", "")).strip().lower()
+            if order_status in {"rejected", "canceled", "cancelled", "error"}:
+                print(
+                    "[WARN] Entry order acknowledged with non-fillable status. "
+                    f"status={order_status}. Skipping state update.",
+                    flush=True,
+                )
+                time.sleep(POLL_SECONDS)
+                continue
             submitted_epoch = (
                 _safe_to_epoch(exec_meta.get("submitted_at")) or submit_started_epoch
             )
@@ -1342,10 +1463,13 @@ def main_loop(
             timestamp = utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
             state["last_signal_epoch"] = time.time()
             state["daily_trades"] += 1
+            no_setup_since_epoch = None
+            adaptive_fallback_active = False
             state["open_position"] = {
                 "side": setup["side"],
                 "size": position_size_coin,  # Saved so we can close this exact amount later
                 "entry_epoch": time.time(),
+                "entry_bar_time": signal_time_raw,
                 "entry_price": trade_plan["entry_price"],
                 "stop_loss": trade_plan["stop_loss"],
                 "target_price": trade_plan["target_price"],

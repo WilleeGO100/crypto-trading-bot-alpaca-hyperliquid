@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import requests
-from dotenv import load_dotenv
+from env_profiles import load_env_profile
 
 # =========================================================
 # BLACK-SCHOLES MATH (mirrors fetch_spx_chain.py)
@@ -27,13 +27,14 @@ MIN_OPTION_PRICE = 0.0001
 MAX_DTE = 120  # Max days to expiration
 
 BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env")
+LOADED_ENV_PROFILE = load_env_profile("engine")
 
 DERIBIT_API_KEY = os.getenv("DERIBIT_API_KEY", "").strip()
 DERIBIT_API_SECRET = os.getenv("DERIBIT_API_SECRET", "").strip()
 
 print(
     "[DEBUG] Deribit credentials load",
+    f"profile={LOADED_ENV_PROFILE}",
     f"key_len={len(DERIBIT_API_KEY)}",
     f"secret_len={len(DERIBIT_API_SECRET)}",
 )
@@ -137,7 +138,7 @@ def signed_gamma_at_spot(
 DERIBIT_BASE = "https://www.deribit.com/api/v2"
 
 
-def _rpc_post(method: str, params: Optional[Dict[str, Any]] = None, require_auth: bool = True) -> Dict[str, Any]:
+def _rpc_post(method: str, params: Optional[Dict[str, Any]] = None, require_auth: bool = False) -> Dict[str, Any]:
     if require_auth:
         _ensure_auth()
     payload = {
@@ -490,8 +491,39 @@ def get_btc_gamma_snapshot() -> Dict[str, Optional[float]]:
     return snapshot
 
 
+def get_btc_combined_snapshot(include_onchain: bool = True, onchain_provider: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Combined snapshot for downstream bots.
+
+    Returns Deribit gamma fields plus normalized on-chain fields when enabled.
+    """
+    gamma = get_btc_gamma_snapshot()
+    if not include_onchain:
+        return dict(gamma)
+
+    try:
+        from btc_onchain import get_btc_onchain_snapshot
+
+        onchain = get_btc_onchain_snapshot(provider=onchain_provider)
+    except Exception as exc:
+        onchain = {
+            "onchain_provider": onchain_provider or os.getenv("ONCHAIN_PROVIDER", "glassnode"),
+            "onchain_status": "ERROR",
+            "onchain_error": f"onchain import/fetch failed: {exc}",
+            "onchain_timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        }
+
+    merged: Dict[str, Any] = dict(gamma)
+    merged.update(onchain)
+    return merged
+
+
 if __name__ == "__main__":
-    # Quick test
+    # Quick tests
     print("[INFO] Fetching BTC gamma snapshot from Deribit...")
-    snapshot = get_btc_gamma_snapshot()
-    print(f"[INFO] Snapshot: {snapshot}")
+    gamma_snapshot = get_btc_gamma_snapshot()
+    print(f"[INFO] Gamma Snapshot: {gamma_snapshot}")
+
+    print("[INFO] Fetching combined gamma + on-chain snapshot...")
+    combined_snapshot = get_btc_combined_snapshot(include_onchain=True)
+    print(f"[INFO] Combined Snapshot: {combined_snapshot}")

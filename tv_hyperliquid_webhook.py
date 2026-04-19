@@ -4,10 +4,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Tuple
 
 import eth_account
-from dotenv import load_dotenv
 from hyperliquid.exchange import Exchange
 from hyperliquid.utils import constants
 
+from env_profiles import load_env_profile
 from hyperliquid_signal_executor import HyperliquidSignalExecutor, IdempotencyStore, risk_config_from_env
 
 
@@ -114,7 +114,7 @@ class TradingViewWebhookHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    load_dotenv()
+    loaded_env = load_env_profile("tv")
 
     env_mode, secret_key, account_address, api_url = _pick_credentials()
     if not secret_key or not account_address:
@@ -148,6 +148,7 @@ def main() -> None:
     TradingViewWebhookHandler.webhook_secret = webhook_secret
 
     server = ThreadingHTTPServer((host, port), TradingViewWebhookHandler)
+    print(f"[WEBHOOK] Loaded env profile: {loaded_env}")
     print(f"[WEBHOOK] TradingView bridge online in {env_mode.upper()} mode at http://{host}:{port}")
     print("[WEBHOOK] POST /webhook with JSON payload, secret via header `X-Webhook-Secret` or payload `secret`.")
     print("[WEBHOOK] Health check at GET /health")

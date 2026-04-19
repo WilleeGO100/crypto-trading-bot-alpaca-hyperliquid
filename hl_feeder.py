@@ -19,10 +19,60 @@ SYMBOL = os.getenv("TRADE_SYMBOL", "BTC")
 SYMBOL_MARKER = LIVE_FEED.with_name("LiveFeed.symbol.txt")
 
 # --- Environment Setup ---
-IS_TESTNET = os.getenv("USE_TESTNET", "True").lower() == "true"
+def _resolve_hl_mode() -> str:
+    raw_mode = os.getenv("HL_ENVIRONMENT", "").strip().lower()
+    if raw_mode in {"paper", "testnet"}:
+        return "paper"
+    if raw_mode in {"live", "mainnet"}:
+        return "live"
+    return "paper" if os.getenv("USE_TESTNET", "True").lower() == "true" else "live"
+
+
+HL_ENV_MODE = _resolve_hl_mode()
+IS_TESTNET = HL_ENV_MODE == "paper"
 BASE_URL = TESTNET_API_URL if IS_TESTNET else MAINNET_API_URL
+GAMMA_REFRESH_SECONDS = float(os.getenv("GAMMA_REFRESH_SECONDS", "120"))
 
 _ohlcv_cache = pd.DataFrame()
+_gamma_cache = {
+    "snapshot": {
+        "spot_price": None,
+        "gamma_flip": None,
+        "major_call_wall": None,
+        "major_put_wall": None,
+        "market_regime": "UNKNOWN",
+        "gamma_state": "UNKNOWN",
+        "dist_to_flip": None,
+        "dist_to_call_wall": None,
+        "dist_to_put_wall": None,
+        "inside_walls": None,
+    },
+    "updated_epoch": 0.0,
+}
+
+
+def _symbol_base_asset(symbol: str) -> str:
+    raw = symbol.strip().upper().replace("-", "/")
+    if "/" in raw:
+        raw = raw.split("/", 1)[0]
+    if raw.endswith("USDC") and len(raw) > 4:
+        raw = raw[:-4]
+    if raw.endswith("USD") and len(raw) > 3:
+        raw = raw[:-3]
+    return raw
+
+
+def _get_gamma_snapshot_cached() -> dict:
+    if _symbol_base_asset(SYMBOL) != "BTC":
+        return dict(_gamma_cache["snapshot"])
+    now = time.time()
+    if now - float(_gamma_cache["updated_epoch"]) >= GAMMA_REFRESH_SECONDS:
+        try:
+            _gamma_cache["snapshot"] = get_btc_gamma_snapshot()
+            _gamma_cache["updated_epoch"] = now
+        except Exception as exc:
+            print(f"[WARN] Gamma refresh failed: {exc}")
+    return dict(_gamma_cache["snapshot"])
 
 
 def _read_symbol_marker() -> str:
@@ -124,7 +174,7 @@ def on_candle_update(msg):
     c = msg.get("data", {})
 
     new_row = {
-        "datetime": pd.to_datetime(c["T"], unit="ms"),
+        "datetime": pd.to_datetime(c["T"], unit="ms", utc=True),
         "open": float(c["o"]),
         "high": float(c["h"]),
         "low": float(c["l"]),
@@ -132,7 +182,7 @@ def on_candle_update(msg):
         "volume": float(c["v"]),
     }
 
-    gex = get_btc_gamma_snapshot()
+    gex = _get_gamma_snapshot_cached()
     new_row.update(gex)
 
     if (
@@ -155,7 +205,10 @@ def on_candle_update(msg):
 
 def run():
     env_name = "TESTNET (Paper)" if IS_TESTNET else "MAINNET (Live)"
-    print(f"--- [FEEDER] Hyperliquid WebSocket Online | {env_name} [{SYMBOL}] ---")
+    print(
+        f"--- [FEEDER] Hyperliquid WebSocket Online | {env_name} [{SYMBOL}] "
+        f"| gamma_refresh={GAMMA_REFRESH_SECONDS}s ---"
+    )
 
     seed_ohlcv_cache()
 

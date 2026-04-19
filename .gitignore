@@ -18,7 +18,8 @@ venv/
 Thumbs.db
 
 # Secrets
-.env
+.env*
+*.env*
 
 # Runtime artifacts
 data/*.csv

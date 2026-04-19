@@ -1,13 +1,15 @@
 import os
 import eth_account
-from dotenv import load_dotenv
 from hyperliquid.exchange import Exchange
 from hyperliquid.utils import constants
+
+from env_profiles import load_env_profile
 
 
 def main():
     # 1. Load the environment variables
-    load_dotenv()
+    loaded_env = load_env_profile("manual")
+    print(f"[CONFIG] Loaded env profile: {loaded_env}")
 
     # 2. Check the Master Switch
     env_mode = os.getenv("HL_ENVIRONMENT", "paper").lower() # Defaults to paper for safety

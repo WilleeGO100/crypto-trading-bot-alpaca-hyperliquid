@@ -25,7 +25,18 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 RANKINGS_PATH = DATA_DIR / "scanner_rankings.json"
 
 DEFAULT_UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "DOGE", "AVAX", "LINK", "ADA"]
-IS_TESTNET = os.getenv("USE_TESTNET", "True").strip().lower() == "true"
+
+
+def _resolve_hl_mode() -> str:
+    raw_mode = os.getenv("HL_ENVIRONMENT", "").strip().lower()
+    if raw_mode in {"paper", "testnet"}:
+        return "paper"
+    if raw_mode in {"live", "mainnet"}:
+        return "live"
+    return "paper" if os.getenv("USE_TESTNET", "True").strip().lower() == "true" else "live"
+
+
+IS_TESTNET = _resolve_hl_mode() == "paper"
 BASE_URL = TESTNET_API_URL if IS_TESTNET else MAINNET_API_URL
 _INFO_CLIENT: Optional[Info] = None
 

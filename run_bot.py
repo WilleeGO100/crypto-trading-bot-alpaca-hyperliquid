@@ -10,17 +10,18 @@ import threading
 from pathlib import Path
 import os
 
-from dotenv import load_dotenv
 from agent_selector import choose_symbol_with_agent
+from env_profiles import load_env_profile
 from market_scanner import run_scan
 from symbol_selector import choose_symbol_for_broker
 
 BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env")
+LOADED_ENV_PROFILE = load_env_profile("engine")
 
 HYPERLIQUID_ENV = {
     "BOT_PROFILE": "hyperliquid",
     "BROKER": "hyperliquid",
+    "HL_MARKET_TYPE": "perp",
     "TRADE_SYMBOL": "BTC",
     "MARKET_SYMBOL": "BTC-USD",
     "GEX_SYMBOL": "BTC",
@@ -78,6 +79,13 @@ def select_symbol() -> dict:
     try:
         top_n = int(os.getenv("SCANNER_TOP_N", "5"))
         scan = run_scan(top_n=top_n)
+        rankings = scan.get("rankings", []) if isinstance(scan, dict) else []
+        if rankings:
+            top_reason = str(rankings[0].get("reason", "")).strip().lower()
+            if top_reason == "fallback_no_data":
+                print("[SCANNER] Fallback/no-data ranking detected. Using BTC defaults.")
+                print_scanner_metrics(scan)
+                return selected
         use_agent = os.getenv("USE_AGENT_SELECTOR", "false").strip().lower() == "true"
         if use_agent:
             selected = choose_symbol_with_agent("hyperliquid")
@@ -93,6 +101,7 @@ def select_symbol() -> dict:
 
 
 def main():
+    print(f"[CONFIG] Loaded env profile: {LOADED_ENV_PROFILE}")
     ensure_hyperliquid_execution_env()
     selected = select_symbol()
 

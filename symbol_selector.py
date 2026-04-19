@@ -10,12 +10,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict
 
-from dotenv import load_dotenv
-
+from env_profiles import load_env_profile
 from market_scanner import RANKINGS_PATH, run_scan
 
 BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env")
+LOADED_ENV_PROFILE = load_env_profile("engine")
 
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -73,5 +72,6 @@ def choose_symbol_for_broker(broker: str) -> Dict[str, str]:
 
 if __name__ == "__main__":
     broker = os.getenv("BROKER", "hyperliquid").strip().lower()
+    print(f"[CONFIG] Loaded env profile: {LOADED_ENV_PROFILE}")
     selected = choose_symbol_for_broker(broker=broker)
     print(f"[SELECTOR] broker={broker} coin={selected['coin']} trade_symbol={selected['trade_symbol']}")
