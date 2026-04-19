@@ -34,6 +34,7 @@ if os.getenv("BROKER", "").strip().lower() == "alpaca":
             os.environ["TRADE_SYMBOL"] = f"{trade_symbol[:-3]}/USD"
 
 from main import AGENT_CONFIG, TP, RM, LV, main_loop  # Added RM import
+from src.alt_market_analysis_manager import AltMarketAnalysisManager
 from src.btc_market_analysis_manager import BTCMarketAnalysisManager
 
 
@@ -111,7 +112,9 @@ def _sync_runtime_params() -> None:
 def main() -> None:
     print("--- MAIN BITCOIN RUNNER ---")
     _sync_runtime_params()
-    main_loop(analysis_manager_cls=BTCMarketAnalysisManager)
+    base = _base_asset(os.getenv("TRADE_SYMBOL", "BTC"))
+    analysis_manager_cls = BTCMarketAnalysisManager if base == "BTC" else AltMarketAnalysisManager
+    main_loop(analysis_manager_cls=analysis_manager_cls)
 
 
 if __name__ == "__main__":
